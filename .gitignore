@@ -1,0 +1,15 @@
+/build/
+/out/
+/.vs/
+/.cache/
+/.pytest_cache/
+/.mypy_cache/
+/__pycache__/
+**/__pycache__/
+*.py[cod]
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/CTestTestfile.cmake
+/Testing/
+CMakeUserPresets.json
