@@ -281,33 +281,8 @@ private:
 inline std::wstring quote_argument(
     std::wstring_view argument
 ) {
-    bool quote =
-        argument.empty();
-
-    for (
-        wchar_t c :
-        argument
-    ) {
-        if (
-            c == L' ' ||
-            c == L'\t' ||
-            c == L'\n' ||
-            c == L'\v' ||
-            c == L'"'
-        ) {
-            quote =
-                true;
-
-            break;
-        }
-    }
-
-    if (!quote) {
-        return std::wstring(
-            argument
-        );
-    }
-
+    // Quote every argument: MSYS/Cygwin also treats bare apostrophes as syntax.
+    // Standard Windows escaping preserves the same argv for native programs.
     std::wstring out;
 
     out.push_back(

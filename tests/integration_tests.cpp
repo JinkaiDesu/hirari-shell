@@ -201,6 +201,11 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     run("item = \"previous\"");run("for :item :(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
     ProcessResult p;require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"z\" \"a\" | hirari_test_program sort"),p)&&p.out=="a\nz\n","pipeline regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"\" \"space value\" \"Ω\""),p)&&p.out=="\nspace value\nΩ\n","portable Unicode/empty argv regression");
+    std::string special = "apostrophe'only";
+    std::string literalPath = "C:\\ordinary\\trailing\\";
+    std::string quoted = "say\"hello\"";
+    auto arguments = "hirari_test_program emit " + quote(special) + " " + quote(literalPath) + " " + quote(quoted);
+    require(ProcessHost::unpack(shell.seed(),run(arguments),p)&&p.out==special+"\n"+literalPath+"\n"+quoted+"\n","native literal apostrophe/backslash/quote argv regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program relay (hirari_test_program emit \"hello\")"),p)&&p.out=="hello\n","consumer composition regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program delayed | hirari_test_program observe"),p)&&p.out.starts_with("LIVE\n"),"pipe execution is not live");
     Fixtures fixtures;
