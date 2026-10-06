@@ -63,51 +63,6 @@ bool name_is(
 //
 // becomes:
 //
-// consumer producer
-//
-// If consumer is already:
-//
-// grep "error"
-//
-// then adding producer becomes:
-//
-// grep "error" (producer)
-//
-// at the pointer/form level.
-seed::Ptr compose(
-    seed::Runtime& runtime,
-    seed::Ptr consumer,
-    seed::Ptr producer
-) {
-    std::vector<seed::Ptr> terms;
-
-    if (
-        runtime.is_relation(
-            consumer
-        )
-    ) {
-        terms =
-            runtime.terms(
-                runtime.as_node(
-                    consumer
-                )
-            );
-    }
-    else {
-        terms.push_back(
-            consumer
-        );
-    }
-
-    terms.push_back(
-        producer
-    );
-
-    return runtime.product(
-        std::move(terms)
-    );
-}
-
 #ifdef _WIN32
 
 using namespace win32;
@@ -608,10 +563,7 @@ ProcessHost::ProcessHost(
     Host& host
 )
     : host_(host) {
-    // Hirari gives the ordinary Seed Symbol("|")
-    // shell-pipe behavior.
-    //
-    // Seed itself does not special-case this glyph.
+    // Use Seed's orientation law, specializing foreign stages as live pipes.
     runtime.define("truth", &ProcessHost::truth, this);
     runtime.define("cd", &ProcessHost::directory, this);
     runtime.define("pwd", &ProcessHost::directory, this);
@@ -839,107 +791,13 @@ seed::Ptr ProcessHost::pipe(
         return relation;
     }
 
-    auto terms =
-        runtime.terms(
-            relation
-        );
-
-    std::vector<
-        std::vector<seed::Ptr>
-    > segments(1);
-
-    bool found =
-        false;
-
-    for (
-        seed::Ptr term :
-        terms
-    ) {
-        if (
-            symbol_is(
-                runtime,
-                term,
-                "|"
-            )
-        ) {
-            found =
-                true;
-
-            if (
-                segments
-                    .back()
-                    .empty()
-            ) {
-                throw std::runtime_error(
-                    "empty producer before |"
-                );
-            }
-
-            segments.emplace_back();
-
-            continue;
-        }
-
-        segments
-            .back()
-            .push_back(
-                term
-            );
-    }
-
-    if (!found) {
-        return relation;
-    }
-
-    if (
-        segments
-            .back()
-            .empty()
-    ) {
-        throw std::runtime_error(
-            "empty consumer after |"
-        );
-    }
-
+    std::vector<seed::Ptr> segments;
+    seed::Ptr canonical = runtime.flow(relation, segments);
+    if (canonical == relation) return relation;
     bool has_foreign_stage = false;
-    for (const auto& segment : segments) {
-        if (static_cast<ProcessHost*>(context)->foreign_program(runtime, runtime.product(segment)))
+    for (seed::Ptr segment : segments) {
+        if (static_cast<ProcessHost*>(context)->foreign_program(runtime, segment))
             has_foreign_stage = true;
-    }
-
-    // producer | consumer
-    //
-    // becomes consumer producer.
-    //
-    // producer | middle | consumer
-    //
-    // becomes consumer (middle producer).
-
-    seed::Ptr canonical =
-        runtime.product(
-            std::move(
-                segments.front()
-            )
-        );
-
-    for (
-        std::size_t i = 1;
-        i < segments.size();
-        ++i
-    ) {
-        seed::Ptr consumer =
-            runtime.product(
-                std::move(
-                    segments[i]
-                )
-            );
-
-        canonical =
-            compose(
-                runtime,
-                consumer,
-                canonical
-            );
     }
 
     std::vector<Stage> stages;
@@ -1199,6 +1057,10 @@ bool ProcessHost::build_pipeline(
             )
         );
 
+    // Unit in the capture position is real structure, not empty argv sugar.
+    if (terms.size() >= 3 && runtime.is_unit(terms[1]))
+        throw std::runtime_error("OS process adapter does not implement capture products");
+
     Stage stage;
 
     stage.program =
@@ -1232,14 +1094,6 @@ bool ProcessHost::build_pipeline(
             producer =
                 term;
 
-            continue;
-        }
-
-        if (
-            runtime.is_unit(
-                term
-            )
-        ) {
             continue;
         }
 

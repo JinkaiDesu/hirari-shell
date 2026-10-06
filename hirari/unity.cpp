@@ -150,7 +150,7 @@ seed::Ptr UnityProgram::run(seed::Node* relation) {
     if(op=="bind") {
         if(a.size()!=4||!runtime_.is_name(a[2])||!runtime_.is_symbol(runtime_.as_name(a[2])->target))
             throw std::runtime_error("usage: unity bind :symbol (unity operation ...)");
-        // Explicit host binding of an evaluated capability value. Native '='
+        // Explicit host binding of an evaluated capability value. Native ':=' / inverse '='
         // deliberately keeps its existing lazy RHS representation.
         auto identity=runtime_.reduce(a[3]);
         runtime_.bind(runtime_.as_symbol(runtime_.as_name(a[2])->target),identity);

@@ -179,51 +179,7 @@ int Shell::run() {
 bool Shell::source_complete(
     std::string_view source
 ) {
-    int depth = 0;
-
-    bool literal = false;
-    bool escaped = false;
-
-    for (
-        char c :
-        source
-    ) {
-        if (literal) {
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-
-            if (c == '"') {
-                literal = false;
-            }
-
-            continue;
-        }
-
-        if (c == '"') {
-            literal = true;
-            continue;
-        }
-
-        if (c == '(') {
-            ++depth;
-            continue;
-        }
-
-        if (c == ')') {
-            --depth;
-        }
-    }
-
-    return
-        !literal &&
-        depth <= 0;
+    return seed::Reader::source_complete(source);
 }
 
 bool Shell::input(

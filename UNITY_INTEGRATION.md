@@ -59,7 +59,7 @@ healthy connection available. Requests have a five-second timeout and support
 host interruption. A timed-out mutation may already have executed.
 
 Seed `=` retains its existing lazy RHS program form. In particular,
-`go = unity new t "GenericProof"` runs New again whenever `go` is demanded.
+`go := unity new t "GenericProof"` runs New again whenever `go` is demanded.
 Use the **explicit host capture** operation for a retained capability value:
 
 ```text

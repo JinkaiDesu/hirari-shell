@@ -9,6 +9,34 @@ namespace seed {
 
 namespace {
 
+// Both the reader and continuation scanner use the same comment rules.
+bool skip_trivia(std::string_view source, std::size_t& pos) {
+    while (pos < source.size()) {
+        if (std::isspace(static_cast<unsigned char>(source[pos]))) { ++pos; continue; }
+        if (source[pos] != '#') break;
+        if (pos + 1 == source.size() || source[pos + 1] != '[') {
+            while (pos < source.size() && source[pos] != '\n') ++pos;
+            continue;
+        }
+        pos += 2;
+        std::size_t depth = 1;
+        while (pos < source.size() && depth) {
+            if (source[pos] == '#' && pos + 1 < source.size() && source[pos + 1] == '[') {
+                ++depth; pos += 2;
+            } else if (source[pos++] == ']') --depth;
+        }
+        if (depth) return false;
+    }
+    return true;
+}
+
+std::string name_spelling(Symbol* symbol) {
+    // Attached ':=' now belongs to binding syntax, so quote operator identities
+    // structurally rather than printing a different value on the next read.
+    if (symbol->text == "=" || symbol->text == ":=") return ":(" + symbol->text + ")";
+    return ":" + symbol->text;
+}
+
 // =============================================================================
 // Bootstrap programs
 // =============================================================================
@@ -105,7 +133,7 @@ Ptr program_query(
 // =
 // -----------------------------------------------------------------------------
 //
-// camera = unity :Camera.main
+// camera := unity :Camera.main  <=>  unity :Camera.main = camera
 //
 // establishes:
 //
@@ -113,8 +141,8 @@ Ptr program_query(
 //     =
 // unity :Camera.main
 //
-// The RHS is retained lazily.
-// It is not demanded merely because it was bound.
+// The expression is retained lazily; returning it preserves normal reduction
+// of the statement result. This is not memoization or once-only capture.
 //
 
 Ptr program_bind(
@@ -125,51 +153,25 @@ Ptr program_bind(
     auto terms =
         runtime.terms(relation);
 
-    std::size_t eq =
-        terms.size();
-
-    for (
-        std::size_t i = 0;
-        i < terms.size();
-        ++i
-    ) {
-        if (
-            is_symbol_text(
-                runtime,
-                terms[i],
-                "="
-            )
-        ) {
-            eq = i;
-            break;
-        }
+    std::size_t eq = terms.size();
+    bool forward = false;
+    for (std::size_t i = 0; i < terms.size(); ++i) {
+        if (!is_symbol_text(runtime, terms[i], "=") &&
+            !is_symbol_text(runtime, terms[i], ":=")) continue;
+        if (eq != terms.size())
+            throw std::runtime_error("group nested bindings explicitly");
+        eq = i;
+        forward = is_symbol_text(runtime, terms[i], ":=");
     }
-
-    if (
-        eq == terms.size() ||
-        eq != 1 ||
-        eq + 1 >= terms.size()
-    ) {
-        return relation;
-    }
-
-    Symbol* destination =
-        symbol_from_identity(
-            runtime,
-            terms[0]
-        );
-
-    if (!destination) {
-        return relation;
-    }
-
+    if (eq == terms.size()) return relation;
+    if ((forward && (eq != 1 || eq + 1 >= terms.size())) ||
+        (!forward && (eq == 0 || eq + 2 != terms.size())))
+        throw std::runtime_error("binding requires name := expression or expression = name");
+    Symbol* destination = symbol_from_identity(runtime, forward ? terms.front() : terms.back());
+    if (!destination) throw std::runtime_error("binding destination must be an identity");
     std::vector<Ptr> rhs_terms(
-        terms.begin() +
-            static_cast<std::ptrdiff_t>(
-                eq + 1
-            ),
-        terms.end()
-    );
+        forward ? terms.begin() + 2 : terms.begin(),
+        forward ? terms.end() : terms.begin() + static_cast<std::ptrdiff_t>(eq));
 
     Ptr rhs =
         runtime.product(
@@ -182,6 +184,11 @@ Ptr program_bind(
     );
 
     return rhs;
+}
+
+Ptr program_flow(Runtime& runtime, Node* relation, Ptr) {
+    std::vector<Ptr> stages;
+    return runtime.flow(relation, stages);
 }
 
 // -----------------------------------------------------------------------------
@@ -781,16 +788,31 @@ char Reader::take() {
 }
 
 void Reader::skip_space() {
-    while (
-        !eof() &&
-        std::isspace(
-            static_cast<unsigned char>(
-                peek()
-            )
-        )
-    ) {
-        ++pos_;
+    if (!skip_trivia(source_, pos_))
+        throw std::runtime_error("unterminated bracket comment");
+}
+
+bool Reader::source_complete(std::string_view source) {
+    int depth = 0;
+    std::size_t pos = 0;
+    while (pos < source.size()) {
+        if (!skip_trivia(source, pos)) return false;
+        if (pos == source.size()) break;
+        char c = source[pos++];
+        if (c == '"') {
+            bool closed = false;
+            while (pos < source.size()) {
+                c = source[pos++];
+                if (c == '\\') {
+                    if (pos == source.size()) return false;
+                    ++pos;
+                } else if (c == '"') { closed = true; break; }
+            }
+            if (!closed) return false;
+        } else if (c == '(') ++depth;
+        else if (c == ')' && --depth < 0) return true; // Reader diagnoses invalid input.
     }
+    return depth == 0;
 }
 
 Ptr Reader::read(
@@ -864,6 +886,10 @@ Ptr Reader::read_form() {
     }
 
     if (peek() == ':') {
+        if (peek(1) == '=') {
+            take(); take();
+            return runtime_.intern(":=");
+        }
         return read_colon_form();
     }
 
@@ -916,7 +942,7 @@ Ptr Reader::read_colon_form() {
                 peek()
             )
         ) ||
-        peek() == ')'
+        peek() == ')' || peek() == '#'
     ) {
         return
             runtime_.arena()
@@ -1026,7 +1052,7 @@ std::string Reader::read_symbol_token() {
             c == '(' ||
             c == ')' ||
             c == '"' ||
-            c == ':'
+            c == ':' || c == '#'
         ) {
             break;
         }
@@ -1134,9 +1160,7 @@ std::string Printer::native_form(
             if (
                 runtime_.is_symbol(target)
             ) {
-                return ":" +
-                    static_cast<Symbol*>(target)
-                        ->text;
+                return name_spelling(static_cast<Symbol*>(target));
             }
 
             if (
@@ -1160,8 +1184,7 @@ std::string Printer::native_form(
             }
 
             return
-                "@ :" +
-                cell->symbol->text;
+                "@ " + name_spelling(cell->symbol);
         }
 
         case HostKind::Node:
@@ -1273,10 +1296,7 @@ std::string Printer::structural_member(
             if (
                 runtime_.is_symbol(target)
             ) {
-                return "(:" +
-                    static_cast<Symbol*>(target)
-                        ->text +
-                    ")";
+                return "(" + name_spelling(static_cast<Symbol*>(target)) + ")";
             }
 
             if (
@@ -1301,9 +1321,7 @@ std::string Printer::structural_member(
             }
 
             return
-                "((@)(:" +
-                cell->symbol->text +
-                "))";
+                "((@)(" + name_spelling(cell->symbol) + "))";
         }
 
         case HostKind::Node:
@@ -1486,10 +1504,26 @@ Ptr Reducer::reduce_once(
 Ptr Reducer::reduce_relation(
     Node* relation
 ) {
+    // Orient the whole relation before any native head can perform effects.
+    // In particular, binding and flow must not execute their producer twice.
+    auto terms = runtime_.terms(relation);
+    for (auto spelling : {":=", "=", "|", ":"}) {
+        for (Ptr term : terms) {
+            if (!is_symbol_text(runtime_, term, spelling)) continue;
+            Program program = runtime_.registry().find(runtime_.as_symbol(term));
+            if (program) {
+                Ptr result = program.invoke(runtime_, relation, program.context);
+                if (result != relation) return result;
+            }
+            break;
+        }
+    }
     // Registered relation Programs get first refusal anywhere in the product.
     // Lazy foreign resolution is restricted to its consumer/head position.
     for (Ptr term : runtime_.terms(relation)) {
         if (!runtime_.is_symbol(term)) continue;
+        auto spelling = runtime_.as_symbol(term)->text;
+        if (spelling == ":=" || spelling == "=" || spelling == "|" || spelling == ":") continue;
         Program program = runtime_.registry().find(runtime_.as_symbol(term));
         if (!program) continue;
         Ptr result = program.invoke(runtime_, relation, program.context);
@@ -1502,6 +1536,31 @@ Ptr Reducer::reduce_relation(
 
     return relation;
 }
+Ptr Runtime::compose(Ptr consumer, Ptr producer) {
+    auto forms = is_relation(consumer) ? terms(as_node(consumer)) : std::vector<Ptr>{consumer};
+    forms.push_back(producer);
+    return product(std::move(forms));
+}
+
+Ptr Runtime::flow(Node* relation, std::vector<Ptr>& stages) {
+    stages.clear();
+    std::vector<Ptr> segment;
+    bool found = false;
+    for (Ptr term : terms(relation)) {
+        if (!is_symbol_text(*this, term, "|")) { segment.push_back(term); continue; }
+        found = true;
+        if (segment.empty()) throw std::runtime_error("empty producer before |");
+        stages.push_back(product(std::move(segment)));
+        segment.clear();
+    }
+    if (!found) return relation;
+    if (segment.empty()) throw std::runtime_error("empty consumer after |");
+    stages.push_back(product(std::move(segment)));
+    Ptr canonical = stages.front();
+    for (std::size_t i = 1; i < stages.size(); ++i) canonical = compose(stages[i], canonical);
+    return canonical;
+}
+
 // =============================================================================
 // Runtime
 // =============================================================================
@@ -1514,6 +1573,8 @@ Runtime::Runtime()
     define("truth", &program_truth);
     define("if", &program_if);
     define("for", &program_for);
+    define(":=", &program_bind);
+    define("|", &program_flow);
 
     define(
         "?",

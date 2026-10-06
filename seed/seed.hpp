@@ -225,6 +225,9 @@ public:
         std::string_view source
     );
 
+    // Shared by file execution and the interactive continuation prompt.
+    static bool source_complete(std::string_view source);
+
 private:
     Runtime& runtime_;
 
@@ -427,6 +430,10 @@ public:
     Ptr product(
         std::vector<Ptr> forms
     );
+
+    // Pure orientation changes: no evaluation or host/process discovery.
+    Ptr compose(Ptr consumer, Ptr producer);
+    Ptr flow(Node* relation, std::vector<Ptr>& stages);
 
     // -------------------------------------------------------------------------
     // Stable cells

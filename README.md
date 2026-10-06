@@ -29,9 +29,9 @@ hirari>
 Use `hirari --eval SOURCE` for one expression or `hirari --file PATH` for a UTF-8
 script. A script contains one expression per completed line; grouped or quoted
 expressions may span lines. UTF-8 BOMs and Unicode paths are supported. Source
-errors report the file and line, stop execution and return nonzero. No extra
-script language or comment syntax is introduced. Foreground interactive tools
-use the interactive shell.
+errors report the file and line, stop execution and return nonzero. Seed supports
+`#` line comments and `#[bracket comments]`, including nested bracket comments.
+Foreground interactive tools use the interactive shell.
 
 ## Seed and shell semantics
 
@@ -43,19 +43,25 @@ These are different values and operations:
 | `:foo` | Name: semantic identity of foo. |
 | `"foo"` | Literal text. |
 | `()` | Empty value. |
-| `greeting = "hello"` | Bind the RHS form to greeting. |
+| `greeting := "hello"` | Bind the RHS form to greeting. |
+| `"hello" = greeting` | The same binding, with the expression first. |
 
-Names are not converted to literals in the evaluator. Native `=` retains the
-RHS program form; it does not memoize a foreign allocation. Demanding a symbol
+Names are not converted to literals in the evaluator. Native `:=` and inverse
+`=` retain the expression form; they do not memoize a foreign allocation. The
+binding statement reduces its returned expression, and demanding a symbol
 reduces its current binding. The existing Program ABI carries an implementation
 and opaque host context without adding evaluator value kinds.
 
+**Syntax migration:** old `name = expression` scripts must use `name := expression`
+or `expression = name`. There is no heuristic compatibility mode. TOML `=` is
+unchanged. See [Seed operator contract](SEED_OPERATORS.md) for grouping and identities.
+
 ```text
-greeting = "hello"
+greeting := "hello"
 greeting
 if :true "yes" "no"
 if :false "yes" "no"
-item = "previous"
+item := "previous"
 for :item :("alpha" "beta") item
 item
 ```
@@ -102,7 +108,7 @@ unity release go
 ```
 
 `unity bind :destination expression` evaluates the expression once and binds
-the returned value. In contrast, `go = unity new t "GenericProof"` keeps the
+the returned value. In contrast, `go := unity new t "GenericProof"` keeps the
 ordinary lazy Seed form and runs New again each time go is demanded.
 Object/type references have typed, opaque host payloads and Name identities;
 they are not strings or numeric handles. Numeric and byte results also retain
@@ -154,7 +160,7 @@ CTest registers five targets:
 
 | Test | Coverage |
 | --- | --- |
-| `seed_semantics` | Existing Seed reader/printer/value/Program regressions. |
+| `seed_semantics` | Reader/printer round trips; application and capture mirrors; binding orientation, lazy effects and stable cells; provider demand; comments and continuation. |
 | `hirari_integration` | Wire golden bytes and all value kinds; partial I/O; persistent Hello/Ready; IDs and frame bounds; faults, disconnect, timeout and no replay; typed/opaque refs, capture identity, release, session guards, CLR signatures and batches; neutral world/script validation and rollback; child environment; Unicode argv/files; control forms; live pipes; exit/quit. |
 | `hirari_eval_name` | CLI preserves a Name. |
 | `hirari_eval_failure` | Missing program returns nonzero. |

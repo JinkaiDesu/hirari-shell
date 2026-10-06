@@ -149,10 +149,15 @@ void unity() {
     require(server.hellos==1&&server.connections==1,"connection is not persistent");
     run("unity release other");require(!shell.execute("unity get other \"name\""),"released reference reused");
     auto before_lazy=server.new_count.load();
-    run("lazy = unity new t \"LazyProof\"");
+    run("lazy := unity new t \"LazyProof\"");
     require(shell.seed().is_relation(shell.seed().binding(shell.seed().intern("lazy"))),"native assignment was forced eager");
     auto lazy1=run("lazy");auto lazy2=run("lazy");
     require(lazy1!=lazy2&&server.new_count==before_lazy+3,"native lazy assignment was memoized");
+    auto before_inverse=server.new_count.load();
+    run("unity new t \"InverseProof\" = inverse");
+    require(shell.seed().is_relation(shell.seed().binding(shell.seed().intern("inverse"))),"inverse binding lost its program form");
+    auto inverse1=run("inverse");auto inverse2=run("inverse");
+    require(inverse1!=inverse2&&server.new_count==before_inverse+3,"inverse binding pre-executed or memoized Unity allocation");
     run("unity disconnect");server.epoch=2;auto before=server.requests.load();
     require(!shell.execute("unity get go \"name\""),"stale session reference reused");require(server.requests==before,"stale reference sent to new session");
     run("unity type \"UnityEngine.GameObject\"");shell.unity().client().disconnect();server.stop();server.check();
@@ -176,7 +181,7 @@ void failures() {
 }
 void worlds_and_scripts() {
     Fixtures fixtures;MemoryHost host;Shell shell(host);Environment worldenv(L"SKUNK_WORLD",L"previous world");
-    auto first=fixtures.world("First world Ω","greeting = \"hello\"\ngreeting\n\"READY\"\n");
+    auto first=fixtures.world("First world Ω","greeting := \"hello\"\ngreeting\n\"READY\"\n");
     require(shell.execute("world open "+quote(path_text(first))),"valid world failed");require(shell.worlds().current().has_value(),"world missing");
     require(std::filesystem::current_path()==std::filesystem::canonical(first),"world cwd not established");require(env(L"SKUNK_WORLD")==path_text(std::filesystem::canonical(first)),"world env not established");
     auto broken=fixtures.world("Broken world","\"unterminated\n");
@@ -186,7 +191,7 @@ void worlds_and_scripts() {
     auto escaped=fixtures.world("Escaped entry","()");write_file(escaped/"world.toml","[world]\nname='Neutral'\nversion=1\n[entry]\nprogram='../First world Ω/start.seed'\n");rejects([&]{read_world(escaped);},"entry path escaped world");
     auto duplicate=fixtures.world("Duplicate key","()");write_file(duplicate/"world.toml","[world]\nname='Neutral'\nname='Duplicate'\nversion=1\n[entry]\nprogram='start.seed'\n");rejects([&]{read_world(duplicate);},"duplicate key accepted");
     auto unsupported=fixtures.world("Unknown version","()");write_file(unsupported/"world.toml","[world]\nname='Neutral'\nversion=2\n[entry]\nprogram='start.seed'\n");rejects([&]{read_world(unsupported);},"unknown world version accepted");
-    auto multiline=fixtures.root/"multiline.seed";write_file(multiline,"\xef\xbb\xbfgreeting = (\n\"multi\"\n)\ngreeting\n");require(shell.execute_file(multiline),"BOM/multiline script failed");require(shell.seed().print(shell.seed().binding(shell.seed().intern("greeting")))=="\"multi\"","script bindings lost");
+    auto multiline=fixtures.root/"multiline.seed";write_file(multiline,"\xef\xbb\xbfgreeting := (\n\"multi\"\n)\ngreeting\n");require(shell.execute_file(multiline),"BOM/multiline script failed");require(shell.seed().print(shell.seed().binding(shell.seed().intern("greeting")))=="\"multi\"","script bindings lost");
     require(shell.execute("world status"),"shell did not recover after world failure");
     Shell empty(host);auto failing=fixtures.world("Initial failure","nonexistent_neutral_program \"arg\"\n");
     auto saved=std::filesystem::current_path();require(!empty.execute("world open "+quote(path_text(failing))),"missing program accepted");require(!empty.worlds().current()&&std::filesystem::current_path()==saved,"first-open failure did not roll back");
@@ -194,11 +199,12 @@ void worlds_and_scripts() {
 void semantics_and_processes(const std::filesystem::path& helper) {
     Environment path(L"PATH",helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");MemoryHost host;Shell shell(host);
     auto run=[&](std::string_view source){auto p=shell.execute(source);if(!p)throw std::runtime_error(host.err);return p;};
-    run("greeting = \"hello\"");require(shell.seed().print(run("greeting"))=="\"hello\"","binding regression");
+    run("greeting := \"hello\"");require(shell.seed().print(run("greeting"))=="\"hello\"","binding regression");
+    run("\"reverse\" = greeting");require(shell.seed().print(run("greeting"))=="\"reverse\"","inverse binding regression");
     require(shell.seed().is_name(run(":foo")),"Name became literal");require(shell.seed().is_literal(run("\"foo\"")),"literal became Name");require(shell.seed().is_unit(run("()")),"unit regression");
     require(shell.seed().print(run("if :true \"yes\" \"no\""))=="\"yes\"","if true regression");require(shell.seed().print(run("if :false \"yes\" \"no\""))=="\"no\"","if false regression");
     require(shell.seed().print(run("if (hirari_test_program emit) \"yes\" \"no\""))=="\"yes\"","process success condition");require(shell.seed().print(run("if (hirari_test_program fail) \"yes\" \"no\""))=="\"no\"","process failure condition");
-    run("item = \"previous\"");run("for :item :(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
+    run("item := \"previous\"");run("for :item :(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
     ProcessResult p;require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"z\" \"a\" | hirari_test_program sort"),p)&&p.out=="a\nz\n","pipeline regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"\" \"space value\" \"Ω\""),p)&&p.out=="\nspace value\nΩ\n","portable Unicode/empty argv regression");
     std::string special = "apostrophe'only";
@@ -208,9 +214,23 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     require(ProcessHost::unpack(shell.seed(),run(arguments),p)&&p.out==special+"\n"+literalPath+"\n"+quoted+"\n","native literal apostrophe/backslash/quote argv regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program relay (hirari_test_program emit \"hello\")"),p)&&p.out=="hello\n","consumer composition regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program delayed | hirari_test_program observe"),p)&&p.out.starts_with("LIVE\n"),"pipe execution is not live");
+    for (auto source : {"hirari_test_program observe (hirari_test_program delayed)",
+                        "hirari_test_program observe(hirari_test_program delayed)"})
+        require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.out.starts_with("LIVE\n"),"application composition buffered its producer");
+    for (auto source : {"hirari_test_program emit \"one\" | hirari_test_program relay",
+                        "hirari_test_program relay (hirari_test_program emit \"one\")",
+                        "hirari_test_program relay(hirari_test_program emit \"one\")"})
+        require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.out=="one\n","composition duplicated or lost process output");
+    require(!shell.execute("hirari_test_program () emit \"should not run\""),"foreign capture was silently treated as application");
+    require(!shell.execute("\"should not run\" : hirari_test_program"),"capture mirror was silently treated as application");
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit ()"),p)&&p.out=="\n","Unit argv was silently discarded");
     Fixtures fixtures;
-    auto script=fixtures.root/"cli Ω file.seed";write_file(script,"greeting = \"CLI_READY\"\ngreeting\n");
+    auto script=fixtures.root/"cli Ω file.seed";write_file(script,"greeting := \"CLI_READY\"\ngreeting\n");
     require(ProcessHost::unpack(shell.seed(),run("hirari --file "+quote(path_text(script))),p)&&p.status==0&&p.out.find("CLI_READY")!=std::string::npos,"CLI --file failed from Unicode path");
+    write_file(script,"#[Multiline (\n\" ignored #[nested] comment]\n# another ( comment\ngreeting := \"#[literal]\"\ngreeting\n");
+    require(shell.execute_file(script)&&shell.seed().print(run("greeting"))=="\"#[literal]\"","script comment continuation or literal failed");
+    write_file(script,"# line 1\n#[ unfinished\n");
+    require(!shell.execute_file(script)&&host.err.find(":2: incomplete Seed expression")!=std::string::npos,"comment EOF line diagnostic missing");
     write_file(script,"\"incomplete\n");
     require(ProcessHost::unpack(shell.seed(),run("hirari --file "+quote(path_text(script))),p)&&p.status!=0&&p.err.find("incomplete Seed expression")!=std::string::npos,"CLI --file error status/diagnostic missing");
     auto world=fixtures.world("Child env","hirari_test_program environment\n");require(shell.execute("world open "+quote(path_text(world))),"child env world failed");require(host.out.find(path_text(std::filesystem::canonical(world)))!=std::string::npos,"child process did not inherit world env");
