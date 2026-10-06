@@ -245,7 +245,7 @@ void shell_programs(const std::filesystem::path& helper) {
     MemoryHost host; Shell shell(host);
     auto run=[&](const std::string& source){auto p=shell.execute(source);if(!p)throw std::runtime_error(host.err);return p;};
     auto& r=shell.seed();
-    write_file(fixture.root/"identity.seed", "arg 0\n");
+    write_file(fixture.root/"identity.seed", "arg 0\n# trailing comment\n#[nested #[ comment] still a comment]\n\n");
     require(r.print(run("identity :semantic-name"))==":semantic-name", "Seed command lost Name identity");
     require(r.print(run(":semantic-name | identity"))==":semantic-name", "Seed command flow/application mismatch");
     require(r.print(run("identity \"space Ω\""))=="\"space Ω\"", "Seed command Unicode/literal arguments failed");

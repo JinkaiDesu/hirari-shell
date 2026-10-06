@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <sstream>
 #include <functional>
+#include <cctype>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -18,6 +19,25 @@ namespace hirari {
 
 namespace {
 struct OnExit { std::function<void()> action; ~OnExit() { action(); } };
+bool source_has_form(std::string_view source) {
+    std::size_t i = 0;
+    while (i < source.size()) {
+        if (std::isspace(static_cast<unsigned char>(source[i]))) { ++i; continue; }
+        if (source[i] != '#') return true;
+        if (i + 1 < source.size() && source[i + 1] == '[') {
+            i += 2;
+            unsigned depth = 1;
+            while (i < source.size() && depth) {
+                if (source[i] == '#' && i + 1 < source.size() && source[i + 1] == '[') { ++depth; i += 2; }
+                else if (source[i] == ']') { --depth; ++i; }
+                else ++i;
+            }
+        } else {
+            while (i < source.size() && source[i] != '\n') ++i;
+        }
+    }
+    return false;
+}
 std::string shell_environment(const wchar_t* key) {
 #ifdef _WIN32
     DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
@@ -455,6 +475,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
         pending += line;
         pending += '\n';
         if (!source_complete(pending)) continue;
+        if (!source_has_form(pending)) { pending.clear(); continue; }
         try {
             if (host_.interrupted()) throw std::runtime_error("Seed program interrupted");
             present(result);
