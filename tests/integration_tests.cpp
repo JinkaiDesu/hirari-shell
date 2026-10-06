@@ -237,6 +237,58 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     auto bad=fixtures.world("Process failure","hirari_test_program fail\n");auto saved=std::filesystem::current_path();require(!shell.execute("world open "+quote(path_text(bad))),"nonzero entry process status ignored");require(std::filesystem::current_path()==saved,"process failure world rollback");
     Shell quitting(host);require(quitting.execute("exit")&&quitting.processes().quitting(),"exit regression");Shell quitting2(host);require(quitting2.execute("quit")&&quitting2.processes().quitting(),"quit regression");
 }
+void shell_programs(const std::filesystem::path& helper) {
+    Fixtures fixture;
+    Environment path(L"PATH", helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");
+    Environment namespace_path(L"HIRARI_PATH", fixture.root.wstring());
+    TestServer server; Environment endpoint(L"SKUNK_UNITY_PIPE",win32::widen(server.endpoint));
+    MemoryHost host; Shell shell(host);
+    auto run=[&](const std::string& source){auto p=shell.execute(source);if(!p)throw std::runtime_error(host.err);return p;};
+    auto& r=shell.seed();
+    write_file(fixture.root/"identity.seed", "arg 0\n");
+    require(r.print(run("identity :semantic-name"))==":semantic-name", "Seed command lost Name identity");
+    require(r.print(run(":semantic-name | identity"))==":semantic-name", "Seed command flow/application mismatch");
+    require(r.print(run("identity \"space Ω\""))=="\"space Ω\"", "Seed command Unicode/literal arguments failed");
+    write_file(fixture.root/"identity.seed", "\"EDITED\"\n");
+    require(r.print(run("identity \"ignored\""))=="\"EDITED\"", "Seed command cached stale source");
+    require(r.print(run("identity.seed \"ignored\""))=="\"EDITED\"", "explicit Seed filename was treated as a native executable");
+    write_file(fixture.root/"all.seed", "args\n");
+    auto all=run("all :foo \"foo\" ()"); require(r.is_name(all), "script args must preserve product as a Name");
+    auto all_terms=r.terms(r.as_node(r.as_name(all)->target));
+    require(all_terms.size()==3 && r.is_name(all_terms[0]) && r.is_literal(all_terms[1]) && r.is_unit(all_terms[2]), "script arguments lost structure");
+    run("local := \"caller\""); auto cell=r.find_cell(r.intern("local")); auto revision=cell->revision;
+    write_file(fixture.root/"scope.seed", "local := \"callee\"\nnew-local := \"temporary\"\nlocal\n");
+    require(r.print(run("scope"))=="\"callee\"", "Seed command result not returned");
+    require(r.print(run("local"))=="\"caller\"" && cell->revision==revision && !r.binding(r.intern("new-local")), "call scope leaked bindings or replaced cells");
+    run("source "+quote(path_text(fixture.root/"scope.seed")));
+    require(r.print(run("local"))=="\"callee\"", "source did not export bindings");
+    auto library=fixture.root/text_path("library Ω");std::filesystem::create_directories(library);
+    write_file(library/"outer.seed", "source \"inner.seed\"\narg 0\n");
+    write_file(library/"inner.seed", "args\n");
+    require(r.print(run("run "+quote(path_text(library/"outer.seed"))+" :outer"))==":outer", "nested source did not restore argument frame or resolve file relative include");
+    write_file(library/"bad.seed", "local := \"bad\"\nmissing_neutral_command \"arg\"\n");
+    require(!shell.execute("run "+quote(path_text(library/"bad.seed"))) && host.err.find("bad.seed:2:")!=std::string::npos, "nested script line diagnostic missing");
+    require(r.print(run("local"))=="\"callee\"", "failed script leaked binding changes");
+    require(!shell.execute("arg 0"), "script arguments escaped call frame");
+    write_file(library/"missing-arg.seed", "arg 9\n");
+    require(!shell.execute("run "+quote(path_text(library/"missing-arg.seed"))), "missing argument accepted");
+    write_file(library/"cycle.seed", "source \"cycle.seed\"\n");
+    require(!shell.execute("run "+quote(path_text(library/"cycle.seed"))) && host.err.find("nesting limit")!=std::string::npos, "recursive source was unbounded");
+    auto executable=library/text_path("external tool Ω.exe");std::filesystem::copy_file(helper,executable);
+    ProcessResult process;
+    require(ProcessHost::unpack(r,run("hirari_test_program emit source run arg args exec"),process) && process.out=="source\nrun\narg\nargs\nexec\n", "shell commands hijacked ordinary program argument positions");
+    require(ProcessHost::unpack(r,run("exec "+quote(path_text(executable))+" emit \"\" \"space Ω\""),process) && process.out=="\nspace Ω\n", "exec flattened empty/Unicode/path arguments");
+    write_file(library/"failure.seed", "exec "+quote(path_text(executable))+" fail\n\"UNREACHABLE\"\n");
+    require(!shell.execute("run "+quote(path_text(library/"failure.seed"))) && host.out.find("UNREACHABLE")==std::string::npos, "tool failure did not stop the calling Seed program");
+    write_file(library/"cli.seed", "arg 0\n");
+    require(ProcessHost::unpack(r,run("hirari --file "+quote(path_text(library/"cli.seed"))+" \"CLI Ω ARG\""),process) && process.out=="\"CLI Ω ARG\"\n", "CLI script arguments failed");
+    write_file(library/"object.seed", "unity bind :temporary (unity new (unity type \"UnityEngine.GameObject\") (arg 0))\ntemporary\n");
+    run("unity bind :kept (run "+quote(path_text(library/"object.seed"))+" \"SURVIVING_OBJECT\")");
+    require(r.print(run("unity get kept \"name\""))=="\"SURVIVING_OBJECT\"", "script returned handle lost identity after call scope ended");
+    require(!r.binding(r.intern("temporary")), "script local foreign binding escaped");
+    shell.unity().client().disconnect();server.stop();server.check();
+}
+
 void path_priority(const std::filesystem::path& helper) {
     Fixtures fixture;
     auto preferred=fixture.root/text_path("preferred tools 日本");
@@ -253,7 +305,7 @@ void path_priority(const std::filesystem::path& helper) {
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==2,"test helper path required");codec();unity();failures();worlds_and_scripts();semantics_and_processes(std::filesystem::path(argv[1]));path_priority(std::filesystem::path(argv[1]));
+        require(argc==2,"test helper path required");codec();unity();failures();worlds_and_scripts();semantics_and_processes(std::filesystem::path(argv[1]));shell_programs(std::filesystem::path(argv[1]));path_priority(std::filesystem::path(argv[1]));
         std::cout<<"All generic Hirari integration tests passed.\n";return 0;
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }

@@ -203,3 +203,56 @@ host selection/environment; it does not undo side effects the entry already
 performed, such as files, Seed bindings, or Unity allocations. `world status`
 reports `stopped` before a successful open. No world-specific content or rules
 are implemented here.
+
+## Shell tool programs
+
+Unity is a target of the shell. Domain commands belong in `.seed` programs and
+external tools, not in Hirari builtins or player-specific loaders.
+
+```text
+run "tools/build-content.seed" "input with spaces.png"
+source "tools/vocabulary.seed"
+exec "C:/Program Files/Some Tool/tool.exe" "literal argument"
+```
+
+An unbound command resolves to a builtin first, then a native executable using
+the existing PATH policy, then a `.seed` file. Seed lookup searches the calling
+script's directory, the current directory, `HIRARI_PATH`, and PATH, in that
+order. `HIRARI_PATH` uses semicolon-separated directories on Windows. An
+explicit `.seed` filename or `run` selects a Seed program without competing
+with an executable of the same stem. Nested `run`/`source` includes resolve
+relative to the calling file before the working directory. Source files are
+read on each invocation, so editing a command does not require shell restart.
+
+`arg 0` returns the first supplied value. `args` returns a captured product of
+all argument values. Names, literals, Unit and retained Unity references stay
+distinct; they are not reparsed command strings. The CLI also accepts
+`hirari --file tool.seed argument...`, projecting native argv into literals.
+
+Discovered commands and `run` restore caller binding heads/revisions, working
+directory and world selection after success or failure. `source` exports its
+binding/context changes into the caller. Both restore the previous argument
+frame. An executed command returns its last result in the same evaluator;
+a Unity object returned by it remains usable after the call ends. File writes,
+external processes, Unity objects and mutations are not rolled back. This is
+a synchronous call scope, not persistent cells, closure capture or a sandbox.
+New cells still occupy the runtime arena, and reflected handles still require
+explicit lifecycle management.
+
+Nesting is bounded at 64 files. Failures include file and source line, preserve
+the failed tool's stdout/stderr and stop the calling script. `exec` uses the
+ordinary native process machinery synchronously with captured streams; it
+does not pass a command string to PowerShell/Bash or start an interactive
+foreground terminal. Ordinary unquoted executable commands retain their
+existing foreground behavior. Scripts currently reject interactive children.
+
+Content can be generated, built and loaded while the player stays running.
+AssetBundle compilation requires an external compatible Unity Editor; loading
+a built bundle uses the existing player AssetBundle API. Neither workflow
+requires a new Seed operator or a content-specific runtime class.
+
+Remaining limits: callable binding heads do not yet forward added arguments;
+mixed `.seed`/native byte-stream pipeline stages do not yet share a stream
+adapter; shell vocabulary is session-local; reflective help is not implemented.
+Prefix `?` retains its shipped demand behavior. These limits are distinct from
+command-file discovery and are not silently changed by this integration.

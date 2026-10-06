@@ -49,7 +49,7 @@ public:
         std::string_view source
     );
 
-    bool execute_file(const std::filesystem::path& path);
+    bool execute_file(const std::filesystem::path& path, const std::vector<std::string>& arguments = {});
     int status() const noexcept { return execution_status_; }
     UnityProgram& unity() noexcept { return unity_; }
     const WorldHost& worlds() const noexcept { return worlds_; }
@@ -70,8 +70,18 @@ public:
 
 private:
     static seed::Ptr world(seed::Runtime&, seed::Node*, seed::Ptr);
-    seed::Ptr evaluate(std::string_view source);
-    void evaluate_script(const std::filesystem::path& path);
+    static seed::Program resolve(seed::Runtime&, seed::Symbol*, seed::Ptr);
+    static seed::Ptr script_command(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr script_builtin(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr script_argument(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr exec(seed::Runtime&, seed::Node*, seed::Ptr);
+    seed::Ptr evaluate(std::string_view source, bool display = true);
+    seed::Ptr evaluate_script(const std::filesystem::path& path, std::vector<seed::Ptr> arguments = {}, bool local = false);
+    std::filesystem::path find_script(const std::string& name, bool explicit_file = false) const;
+    struct ScriptProgram { Shell* shell; std::filesystem::path path; };
+    struct ScriptFrame { std::filesystem::path path; std::vector<seed::Ptr> arguments; };
+    std::unordered_map<seed::Symbol*, std::unique_ptr<ScriptProgram>> scripts_;
+    std::vector<ScriptFrame> script_frames_;
     void report(const std::exception& error);
 
     static bool source_complete(

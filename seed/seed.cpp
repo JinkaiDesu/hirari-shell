@@ -1835,6 +1835,18 @@ void Runtime::bind(
     ++cell->revision;
 }
 
+std::vector<Cell> Runtime::capture_bindings() const {
+    std::vector<Cell> saved;
+    saved.reserve(cells_.size());
+    for (const auto& [symbol, cell] : cells_) saved.push_back(*cell);
+    return saved;
+}
+
+void Runtime::restore_bindings(const std::vector<Cell>& saved) {
+    for (const auto& [symbol, cell] : cells_) cell->head = nullptr;
+    for (const auto& state : saved) *ensure_cell(state.symbol) = state;
+}
+
 Ptr Runtime::binding(
     Symbol* symbol
 ) const {

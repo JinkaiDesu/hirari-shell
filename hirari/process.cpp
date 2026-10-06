@@ -658,13 +658,13 @@ void ProcessHost::begin_foreground(
         conpty_.reset();
     }
 
-    foreground_root_ =
-        root;
+    foreground_stack_.push_back(foreground_root_);
+    foreground_root_ = root;
 }
 
 void ProcessHost::end_foreground() {
-    foreground_root_ =
-        nullptr;
+    foreground_root_ = foreground_stack_.empty() ? nullptr : foreground_stack_.back();
+    if (!foreground_stack_.empty()) foreground_stack_.pop_back();
 }
 
 bool ProcessHost::interactive() const noexcept {
@@ -1178,6 +1178,20 @@ seed::Ptr ProcessHost::invoke(
             *program,
             relation
         );
+}
+
+seed::Ptr ProcessHost::execute(seed::Runtime& runtime, const std::string& path,
+                              const std::vector<seed::Ptr>& arguments) {
+#ifdef _WIN32
+    auto executable = find_executable(path);
+    if (executable.empty()) throw std::runtime_error("program not found: " + path);
+    ForeignProgram program{this, runtime.intern(path), std::move(executable)};
+    Stage stage{&program, {}};
+    for (auto value : arguments) stage.arguments.push_back(argument(runtime, value));
+    return run_pipeline(runtime, {std::move(stage)});
+#else
+    throw std::runtime_error("OS process adapter requires Windows");
+#endif
 }
 
 seed::Ptr ProcessHost::run(

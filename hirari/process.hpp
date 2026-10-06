@@ -42,6 +42,9 @@ public:
         ProcessResult& result
     );
 
+    // Explicit executable paths are values, not parser tokens or shell command strings.
+    seed::Ptr execute(seed::Runtime&, const std::string& path, const std::vector<seed::Ptr>& arguments);
+
     // Hirari marks exactly one Seed form as the
     // foreground/root evaluation.
     void begin_foreground(
@@ -157,6 +160,7 @@ private:
 
     seed::Ptr foreground_root_ =
         nullptr;
+    std::vector<seed::Ptr> foreground_stack_;
 
     std::atomic_int last_status_{0};
 };

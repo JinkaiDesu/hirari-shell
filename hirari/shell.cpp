@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <sstream>
+#include <functional>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -14,6 +15,26 @@
 #include <string_view>
 
 namespace hirari {
+
+namespace {
+struct OnExit { std::function<void()> action; ~OnExit() { action(); } };
+std::string shell_environment(const wchar_t* key) {
+#ifdef _WIN32
+    DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
+    if (!size) return {};
+    std::wstring value(size, L'\0');
+    value.resize(GetEnvironmentVariableW(key, value.data(), size));
+    return win32::narrow(value);
+#else
+    return {};
+#endif
+}
+std::string script_text(seed::Runtime& r, seed::Ptr form) {
+    auto value = r.reduce(form);
+    if (!r.is_literal(value)) throw std::runtime_error("file/program path requires a quoted string");
+    return r.as_literal(value)->bytes;
+}
+}
 
 Shell::Shell(
     Host& host
@@ -27,10 +48,109 @@ Shell::Shell(
         host_
     ), unity_(seed_, host_) {
     seed_.set_resolver(
-        &ProcessHost::resolve,
-        &processes_
+        &Shell::resolve,
+        this
     );
     seed_.define("world", &Shell::world, this);
+    seed_.define("source", &Shell::script_builtin, this);
+    seed_.define("run", &Shell::script_builtin, this);
+    seed_.define("arg", &Shell::script_argument, this);
+    seed_.define("args", &Shell::script_argument, this);
+    seed_.define("exec", &Shell::exec, this);
+}
+
+std::filesystem::path Shell::find_script(const std::string& name, bool explicit_file) const {
+    auto file = text_path(name);
+    if (file.extension() != ".seed") {
+        if (explicit_file) throw std::runtime_error("Seed programs require a .seed file");
+        if (file.has_extension()) return {};
+        file += ".seed";
+    }
+    std::vector<std::filesystem::path> roots;
+    if (!script_frames_.empty()) roots.push_back(script_frames_.back().path.parent_path());
+    roots.push_back(std::filesystem::current_path());
+    if (!explicit_file && !file.has_parent_path()) {
+        for (const auto* key : {L"HIRARI_PATH", L"PATH"}) {
+            std::istringstream paths(shell_environment(key));
+            std::string root;
+            while (std::getline(paths, root, ';')) if (!root.empty()) roots.push_back(text_path(root));
+        }
+    }
+    if (file.is_absolute()) roots = {std::filesystem::path{}};
+    for (const auto& root : roots) {
+        auto candidate = root / file;
+        std::error_code error;
+        if (std::filesystem::is_regular_file(candidate, error)) return std::filesystem::canonical(candidate);
+    }
+    return {};
+}
+
+seed::Program Shell::resolve(seed::Runtime& r, seed::Symbol* symbol, seed::Ptr context) {
+    auto& shell = *static_cast<Shell*>(context);
+    if (r.binding(symbol)) return {};
+    // Native programs retain PATH priority; explicitly named .seed files bypass it.
+    if (text_path(symbol->text).extension() != ".seed")
+        if (auto program = ProcessHost::resolve(r, symbol, &shell.processes_)) return program;
+    auto path = shell.find_script(symbol->text);
+    if (path.empty()) return {};
+    auto& program = shell.scripts_[symbol];
+    if (!program) program = std::make_unique<ScriptProgram>();
+    *program = {&shell, std::move(path)};
+    return {&Shell::script_command, program.get()};
+}
+
+seed::Ptr Shell::script_command(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
+    auto& program = *static_cast<ScriptProgram*>(context);
+    auto terms = r.terms(relation);
+    std::vector<seed::Ptr> arguments;
+    for (std::size_t i = 1; i < terms.size(); ++i) arguments.push_back(r.reduce(terms[i]));
+    // Copy before nesting: command discovery can refresh this program's cached path.
+    auto path = program.path;
+    return program.shell->evaluate_script(path, std::move(arguments), true);
+}
+
+seed::Ptr Shell::script_builtin(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
+    auto terms = r.terms(relation);
+    if (terms.empty() || !r.is_symbol(terms[0]) ||
+        (r.as_symbol(terms[0])->text != "source" && r.as_symbol(terms[0])->text != "run")) return relation;
+    if (terms.size() < 2) throw std::runtime_error("usage: source|run \"file.seed\" [arguments]");
+    auto& shell = *static_cast<Shell*>(context);
+    auto name = script_text(r, terms[1]);
+    auto path = shell.find_script(name, true);
+    if (path.empty()) throw std::runtime_error("Seed program not found: " + name);
+    std::vector<seed::Ptr> arguments;
+    for (std::size_t i = 2; i < terms.size(); ++i) arguments.push_back(r.reduce(terms[i]));
+    return shell.evaluate_script(path, std::move(arguments), r.as_symbol(terms[0])->text == "run");
+}
+
+seed::Ptr Shell::script_argument(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
+    auto terms = r.terms(relation);
+    if (terms.empty() || !r.is_symbol(terms[0]) ||
+        (r.as_symbol(terms[0])->text != "arg" && r.as_symbol(terms[0])->text != "args")) return relation;
+    auto& shell = *static_cast<Shell*>(context);
+    if (shell.script_frames_.empty()) throw std::runtime_error("arg/args require an active Seed program");
+    const auto& arguments = shell.script_frames_.back().arguments;
+    if (r.as_symbol(terms[0])->text == "args") {
+        if (terms.size() != 1) throw std::runtime_error("args takes no arguments");
+        return r.arena().make_name(r.product(arguments));
+    }
+    if (terms.size() != 2) throw std::runtime_error("usage: arg INDEX (zero based)");
+    auto index_form = r.reduce(terms[1]);
+    if (!r.is_symbol(index_form)) throw std::runtime_error("arg INDEX requires a non-negative integer");
+    auto text = r.as_symbol(index_form)->text;
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("arg INDEX requires a non-negative integer");
+    auto index = std::stoull(text);
+    if (index >= arguments.size()) throw std::runtime_error("script argument out of range: " + text);
+    return arguments[static_cast<std::size_t>(index)];
+}
+
+seed::Ptr Shell::exec(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
+    auto terms = r.terms(relation);
+    if (terms.empty() || !r.is_symbol(terms[0]) || r.as_symbol(terms[0])->text != "exec") return relation;
+    if (terms.size() < 2) throw std::runtime_error("usage: exec \"executable\" [arguments]");
+    auto path = script_text(r, terms[1]);
+    return static_cast<Shell*>(context)->processes_.execute(r, path, {terms.begin() + 2, terms.end()});
 }
 
 int Shell::run() {
@@ -271,7 +391,7 @@ void Shell::interrupt() {
     cancel_input();
 }
 
-seed::Ptr Shell::evaluate(std::string_view source) {
+seed::Ptr Shell::evaluate(std::string_view source, bool display) {
     seed::Ptr form = seed_.read(source);
     if (seed_.is_symbol(form) && !seed_.binding(seed_.as_symbol(form)))
         form = seed_.arena().make_relation({form});
@@ -291,7 +411,7 @@ seed::Ptr Shell::evaluate(std::string_view source) {
     execution_status_ = 0;
     ProcessResult process;
     if (ProcessHost::unpack(seed_, result, process)) execution_status_ = process.status;
-    if (!processes_.interactive()) present(result);
+    if (display && !processes_.interactive()) present(result);
     return result;
 }
 void Shell::report(const std::exception& error) {
@@ -303,12 +423,32 @@ seed::Ptr Shell::execute(std::string_view source) {
     try { return evaluate(source); }
     catch (const std::exception& error) { report(error); return nullptr; }
 }
-void Shell::evaluate_script(const std::filesystem::path& path) {
+seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<seed::Ptr> arguments, bool local) {
+    if (script_frames_.size() >= 64) throw std::runtime_error("Seed program nesting limit (64) exceeded");
     auto source = read_source(path);
+    auto saved_bindings = local ? seed_.capture_bindings() : std::vector<seed::Cell>{};
+    auto saved_directory = std::filesystem::current_path();
+    auto saved_world = worlds_;
+    auto saved_world_env = shell_environment(L"SKUNK_WORLD");
+    script_frames_.push_back({std::filesystem::absolute(path), std::move(arguments)});
+    OnExit scope{[&, local] {
+        script_frames_.pop_back();
+        if (local) {
+            seed_.restore_bindings(saved_bindings);
+            std::error_code ignored;
+            std::filesystem::current_path(saved_directory, ignored);
+            worlds_ = saved_world;
+#ifdef _WIN32
+            auto wide = win32::widen(saved_world_env);
+            SetEnvironmentVariableW(L"SKUNK_WORLD", wide.empty() ? nullptr : wide.c_str());
+#endif
+        }
+    }};
     std::istringstream lines(source);
     std::string line, pending;
     std::size_t number = 0, start = 1;
     execution_status_ = 0;
+    seed::Ptr result = seed_.arena().unit();
     while (std::getline(lines, line)) {
         ++number;
         if (pending.empty()) start = number;
@@ -316,19 +456,30 @@ void Shell::evaluate_script(const std::filesystem::path& path) {
         pending += '\n';
         if (!source_complete(pending)) continue;
         try {
-            evaluate(pending);
+            if (host_.interrupted()) throw std::runtime_error("Seed program interrupted");
+            present(result);
+            result = evaluate(pending, false);
             if (processes_.interactive()) throw std::runtime_error("interactive programs require the interactive shell");
-            if (execution_status_ != 0) throw std::runtime_error("entry program returned status " + std::to_string(execution_status_));
+            if (execution_status_ != 0) {
+                present(result);
+                throw std::runtime_error("entry program returned status " + std::to_string(execution_status_));
+            }
         } catch (const std::exception& error) {
             throw std::runtime_error(path_text(path) + ':' + std::to_string(start) + ": " + error.what());
         }
         pending.clear();
-        if (processes_.quitting()) return;
+        if (processes_.quitting()) return result;
     }
     if (!pending.empty()) throw std::runtime_error(path_text(path) + ':' + std::to_string(start) + ": incomplete Seed expression");
+    return result;
 }
-bool Shell::execute_file(const std::filesystem::path& path) {
-    try { evaluate_script(path); return true; }
+bool Shell::execute_file(const std::filesystem::path& path, const std::vector<std::string>& arguments) {
+    try {
+        std::vector<seed::Ptr> values;
+        for (const auto& argument : arguments) values.push_back(seed_.arena().make_literal(argument));
+        present(evaluate_script(path, std::move(values)));
+        return true;
+    }
     catch (const std::exception& error) { report(error); return false; }
 }
 seed::Ptr Shell::world(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
@@ -344,7 +495,7 @@ seed::Ptr Shell::world(seed::Runtime& r, seed::Node* relation, seed::Ptr context
     if (op != "open" || a.size() != 3) throw std::runtime_error("usage: world open \"root\" | world status");
     auto root = r.reduce(a[2]);
     if (!r.is_literal(root)) throw std::runtime_error("world root requires a quoted path");
-    shell.worlds_.open(text_path(r.as_literal(root)->bytes), [&shell](const auto& path) { shell.evaluate_script(path); });
+    shell.worlds_.open(text_path(r.as_literal(root)->bytes), [&shell](const auto& path) { shell.present(shell.evaluate_script(path)); });
     return r.arena().make_literal(shell.worlds_.status());
 }
 

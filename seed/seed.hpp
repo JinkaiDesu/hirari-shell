@@ -460,6 +460,10 @@ public:
         Cell* cell
     ) const;
 
+    // Host call scopes preserve cell identity without copying or serializing values.
+    std::vector<Cell> capture_bindings() const;
+    void restore_bindings(const std::vector<Cell>& saved);
+
     // -------------------------------------------------------------------------
     // Host inspection
     // -------------------------------------------------------------------------
