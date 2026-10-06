@@ -93,8 +93,10 @@ Unity executes these operations through its own main-thread queue.
 
 Quoted literals stay String values. `:true` and `:false` encode Boolean; `()`
 encodes Null. Unbound numeric tokens encode Int32/Int64 or Double. Arbitrary
-Names are rejected as text. Returned numbers and bytes retain their wire kind
-and exact value in opaque host payloads. Explicit constructors are:
+Names are rejected as text. Returned numbers retain their wire kind and exact
+value in opaque host payloads. Skunkworks retains returned CLR arrays, including
+`byte[]` at every size, as object references rather than copying their contents
+into a response. Explicit constructors are:
 
 ```text
 unity bind :count (unity i32 "12")
@@ -107,6 +109,24 @@ unity string "literal text"
 
 Integer helpers validate range; floats reject non-finite input. Bytes use
 even-length hexadecimal text. `unity string` accepts a quoted literal only.
+
+`unity bytes` is an explicit bounded input payload. A returned array is instead
+an opaque CLR reference: capture it once with `unity bind`, then reuse it directly
+in subsequent CLR calls, including within a batch. For example:
+
+```text
+unity bind :fileType (unity type "System.IO.File")
+unity bind :payload (unity call fileType "ReadAllBytes" "artifact.bin")
+unity get payload "Length"
+unity call fileType "WriteAllBytes" "copy.bin" payload
+unity release payload
+```
+
+The bytes stay inside Unity/Mono. Release drops that broker handle, not any other
+owner's reference or the underlying resource. Ordinary `:=` / inverse `=` retains
+the program form and can repeat the read; it does not capture the array once.
+File I/O remains synchronous on Unity's main thread. This changes no Seed syntax
+or wire tags, and does not add automatic disposal, client leases or bulk export.
 
 ## Explicit CLR signatures and generic methods
 
