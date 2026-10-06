@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <sstream>
+#include <cstdlib>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -35,6 +36,8 @@ Shell::Shell(
 
 int Shell::run() {
     host_.write("ƸӜƷ Hirari · Seed `/\n\n");
+    execute_startup(); // Failure reports a diagnostic and still reaches the recovery prompt.
+    if (processes_.quitting()) return 0;
     std::string line;
     for (;;) {
 #ifdef _WIN32
@@ -331,6 +334,20 @@ bool Shell::execute_file(const std::filesystem::path& path) {
     try { evaluate_script(path); return true; }
     catch (const std::exception& error) { report(error); return false; }
 }
+bool Shell::execute_startup() {
+#ifdef _WIN32
+    DWORD size = GetEnvironmentVariableW(L"HIRARI_STARTUP", nullptr, 0);
+    if (!size) return true;
+    std::wstring source(size, L'\0');
+    DWORD count = GetEnvironmentVariableW(L"HIRARI_STARTUP", source.data(), size);
+    if (!count || count >= size) { host_.error("error: startup environment changed while reading\n"); execution_status_ = 1; return false; }
+    source.resize(count);
+    return execute_file(std::filesystem::path(source));
+#else
+    const char* source = std::getenv("HIRARI_STARTUP");
+    return !source || !*source ? true : execute_file(text_path(source));
+#endif
+}
 seed::Ptr Shell::world(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
     auto a = r.terms(relation);
     if (a.empty() || !r.is_symbol(a[0]) || r.as_symbol(a[0])->text != "world") return relation;
@@ -340,6 +357,11 @@ seed::Ptr Shell::world(seed::Runtime& r, seed::Node* relation, seed::Ptr context
     if (op == "status") {
         if (a.size() != 2) throw std::runtime_error("world status takes no arguments");
         return r.arena().make_literal(shell.worlds_.status());
+    }
+    if (op == "root") {
+        if (a.size() != 2) throw std::runtime_error("world root takes no arguments");
+        if (!shell.worlds_.current()) throw std::runtime_error("no world is selected");
+        return r.arena().make_literal(path_text(shell.worlds_.current()->root));
     }
     if (op != "open" || a.size() != 3) throw std::runtime_error("usage: world open \"root\" | world status");
     auto root = r.reduce(a[2]);

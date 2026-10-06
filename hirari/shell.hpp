@@ -50,6 +50,7 @@ public:
     );
 
     bool execute_file(const std::filesystem::path& path);
+    bool execute_startup();
     int status() const noexcept { return execution_status_; }
     UnityProgram& unity() noexcept { return unity_; }
     const WorldHost& worlds() const noexcept { return worlds_; }

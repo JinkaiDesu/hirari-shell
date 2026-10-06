@@ -249,11 +249,30 @@ void path_priority(const std::filesystem::path& helper) {
     value=shell.execute("hirari --eval "+quote("hirari_test_program emit \"RAW_BYTES\""));
     require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="RAW_BYTES\n","CLI translated child output bytes");
 }
+void optional_startup() {
+    Fixtures fixture;
+    auto script=fixture.root/text_path("startup 日本.seed");
+    write_file(script,"startupValue := \"STARTUP_READY\"\nstartupValue\n");
+    Environment startup(L"HIRARI_STARTUP",script.wstring());
+    MemoryHost host;Shell shell(host);
+    require(shell.execute_startup()&&host.out.find("STARTUP_READY")!=std::string::npos,"Unicode startup did not evaluate in the live shell");
+    require(shell.seed().print(shell.execute("startupValue"))=="\"STARTUP_READY\"","startup binding did not survive into the live session");
+    write_file(script,"missing_startup_program\n");
+    require(!shell.execute_startup()&&host.err.find("program not found")!=std::string::npos,"startup failure lost diagnostic");
+    require(shell.execute("\"RECOVERY_READY\""),"startup failure made shell unusable");
+    require(!shell.execute("world root"),"unselected world unexpectedly had a root");
+    auto world=fixture.world("root 日本","rootValue := \"ROOT_READY\"\n");
+    require(shell.execute("world open "+quote(path_text(world))),"root fixture did not open");
+    auto root=shell.execute("world root");
+    require(root&&shell.seed().is_literal(root)&&shell.seed().as_literal(root)->bytes==path_text(std::filesystem::canonical(world)),"world root lost canonical Unicode path");
+    std::filesystem::remove(script);
+    require(!shell.execute_startup(),"missing startup file accepted");
+}
 
 }
 int wmain(int argc,wchar_t** argv) {
     try {
-        require(argc==2,"test helper path required");codec();unity();failures();worlds_and_scripts();semantics_and_processes(std::filesystem::path(argv[1]));path_priority(std::filesystem::path(argv[1]));
+        require(argc==2,"test helper path required");codec();unity();failures();worlds_and_scripts();semantics_and_processes(std::filesystem::path(argv[1]));path_priority(std::filesystem::path(argv[1]));optional_startup();
         std::cout<<"All generic Hirari integration tests passed.\n";return 0;
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }
