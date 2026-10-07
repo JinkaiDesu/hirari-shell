@@ -281,7 +281,9 @@ Seed retains its demand primitive; Hirari supplies reflective help above it.
 Interactive top-level definitions save automatically to
 `%LOCALAPPDATA%/Hirari/vocabulary`. `HIRARI_STATE` selects a store; `-` disables
 it. Noninteractive scripts and local calls remain transient unless explicitly
-saved. `source` can export definitions into the interactive caller.
+saved. An established definition persists even if its initial command fails;
+restoring/reloading does not add a second automatic revision. `source` can export
+definitions into the interactive caller.
 
 ```text
 vocab save :recent "Show repository history"

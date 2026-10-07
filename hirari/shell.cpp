@@ -480,6 +480,25 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
             (seed_.is_symbol(terms.back()) && seed_.as_symbol(terms.back())->text=="help"));
     }
     if(!inspecting)form = seed_.application(form);
+    bool managing_vocabulary = false;
+    if(seed_.is_relation(form)) {
+        auto terms=seed_.terms(seed_.as_node(form));
+        managing_vocabulary=!terms.empty() && seed_.is_symbol(terms.front()) && seed_.as_symbol(terms.front())->text=="vocab";
+    }
+    // A binding already exists even if demanding its initial head fails. Persist
+    // the definition on both return and unwind; explicit store operations own
+    // their commits and must not be saved a second time by this observer.
+    OnExit persistence{[&, managing_vocabulary] {
+        if(!vocabulary_ || !interactive_session_ || !script_frames_.empty() || managing_vocabulary)return;
+        try {
+            for(const auto& cell:seed_.capture_bindings()) {
+                auto old=std::find_if(before.begin(),before.end(),[&](const auto& v){return v.symbol==cell.symbol;});
+                if(!cell.head || (old!=before.end() && old->revision==cell.revision))continue;
+                try {vocabulary_->save(seed_,cell.symbol->text,vocabulary_->annotation(cell.symbol->text),[this](auto p){return unity_.foreign(p)!=nullptr;});}
+                catch(const std::exception& error){host_.error("definition remains session-local: "+cell.symbol->text+": "+error.what()+"\n");}
+            }
+        } catch(const std::exception& error) {host_.error(std::string("definition persistence failed: ")+error.what()+"\n");}
+    }};
     processes_.begin_foreground(form);
     struct ForegroundGuard {
         ProcessHost& processes;
@@ -496,14 +515,6 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
     execution_status_ = 0;
     ProcessResult process;
     if (ProcessHost::unpack(seed_, result, process)) execution_status_ = process.status;
-    if(vocabulary_ && interactive_session_ && script_frames_.empty() && execution_status_==0) {
-        for(const auto& cell:seed_.capture_bindings()) {
-            auto old=std::find_if(before.begin(),before.end(),[&](const auto& v){return v.symbol==cell.symbol;});
-            if(!cell.head || (old!=before.end() && old->revision==cell.revision))continue;
-            try {vocabulary_->save(seed_,cell.symbol->text,vocabulary_->annotation(cell.symbol->text),[this](auto p){return unity_.foreign(p)!=nullptr;});}
-            catch(const std::exception& error){host_.error("definition remains session-local: "+cell.symbol->text+": "+error.what()+"\n");}
-        }
-    }
     if (display && !processes_.interactive()) present(result);
     return result;
 }

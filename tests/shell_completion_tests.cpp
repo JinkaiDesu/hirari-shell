@@ -2,6 +2,8 @@
 #include "hirari/win32.hpp"
 #include <fstream>
 #include <iostream>
+#include <sstream>
+#include <algorithm>
 #include <stdexcept>
 #include <thread>
 namespace {
@@ -47,6 +49,21 @@ int wmain(int argc,wchar_t** argv) {
         require(r.as_literal(run("vocab history :say"))->bytes.find("A structured greeting tool")!=std::string::npos,"annotation/history lost");
         run("unity bind :opaque (unity i32 4)");require(!shell.execute("vocab save :opaque"),"opaque CLR value serialized as a forged Name");
         require(!shell.execute("hirari_test_program emit opaque"),"opaque CLR identity flattened into native argv");
+        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"interactive vocabulary").c_str());
+        {
+            Host interactiveHost;hirari::Shell interactiveShell(interactiveHost);
+            std::istringstream input("broken := hirari_test_program fail\nmissing := unavailable_program \"arg\"\nvocab restore :broken 1\nvocab use "+quote(hirari::path_text(root/L"interactive vocabulary"))+"\nquit\n");
+            struct InputGuard { std::streambuf* old; ~InputGuard(){std::cin.rdbuf(old);std::cin.clear();} } inputGuard{std::cin.rdbuf(input.rdbuf())};
+            interactiveShell.run();
+            auto history=interactiveShell.execute("vocab history :broken");
+            auto lines=interactiveShell.seed().as_literal(history)->bytes;
+            require(std::count(lines.begin(),lines.end(),'\n')==2,"restore/reload duplicated durable history commits");
+            Host restoredHost;hirari::Shell restored(restoredHost);
+            auto help=restored.execute("? broken");
+            require(restored.seed().as_literal(help)->bytes.find("broken :=")!=std::string::npos,"failed initial command prevented definition persistence");
+            require(restored.seed().as_literal(restored.execute("? missing"))->bytes.find("missing :=")!=std::string::npos,"initial evaluator error prevented definition persistence");
+        }
+        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"user vocabulary").c_str());
         // Live byte stages invoke independent script processes; ordinary calls above stay structured.
         write(root/L"producer.seed","hirari_test_program delayed\n");
         write(root/L"consumer.seed","hirari_test_program relay-live\n");
