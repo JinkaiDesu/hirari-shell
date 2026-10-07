@@ -1,5 +1,8 @@
 # Hirari
 
+Installed discovery, writable roots and the executable icon are documented in
+[installation](INSTALLATION.md).
+
 Hirari is an independently runnable Windows shell over the Seed evaluator.
 Seed owns values, identities, bindings, products and evaluation. Hirari owns
 program resolution, live process composition, foreground terminal programs and

@@ -42,6 +42,7 @@ target_link_libraries(hirari_runtime
 
 add_executable(hirari
     hirari/main.cpp
+    hirari/installation.cpp
 )
 
 target_link_libraries(hirari
@@ -84,6 +85,15 @@ else()
     )
 endif()
 if(WIN32)
+    enable_language(RC)
+    find_program(HIRARI_POWERSHELL NAMES pwsh powershell REQUIRED)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hirari.ico"
+        COMMAND "${HIRARI_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/build-icon.ps1" -Source "${CMAKE_CURRENT_SOURCE_DIR}/icon.png" -Output "${CMAKE_CURRENT_BINARY_DIR}/hirari.ico"
+        DEPENDS icon.png tools/build-icon.ps1 VERBATIM)
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hirari.rc" CONTENT "1 ICON \"${CMAKE_CURRENT_BINARY_DIR}/hirari.ico\"\n")
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/hirari.rc" PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/hirari.ico")
+    target_sources(hirari PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/hirari.rc" "${CMAKE_CURRENT_BINARY_DIR}/hirari.ico")
+    target_link_libraries(hirari PRIVATE shell32 ole32)
     target_compile_definitions(hirari_runtime PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX)
 endif()
 if(MSVC)

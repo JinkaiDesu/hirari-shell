@@ -1,4 +1,5 @@
 #include "hirari/shell.hpp"
+#include "hirari/installation.hpp"
 #include <iostream>
 #include <atomic>
 #include <vector>
@@ -67,6 +68,7 @@ int main(int argc, char** argv) {
 #endif
     ConsoleHost host;
     try {
+        hirari::initialize_installation();
         hirari::Shell shell(host);
         std::vector<std::string> args;
         for (int i = 1; i < argc; ++i) {

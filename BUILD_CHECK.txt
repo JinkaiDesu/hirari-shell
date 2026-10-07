@@ -1,2 +1,0 @@
-Current build instructions, API semantics and regression coverage are documented in README.md and UNITY_INTEGRATION.md.
-Run the registered CTest suites for the current source state. The previous one-off build note has been superseded.
