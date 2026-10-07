@@ -105,11 +105,8 @@ Ptr program_query(
 
     if (
         terms.empty() ||
-        !is_symbol_text(
-            runtime,
-            terms.front(),
-            "?"
-        )
+        !(is_symbol_text(runtime, terms.front(), "?") ||
+          is_symbol_text(runtime, terms.front(), "demand"))
     ) {
         return relation;
     }
@@ -189,6 +186,20 @@ Ptr program_bind(
 Ptr program_flow(Runtime& runtime, Node* relation, Ptr) {
     std::vector<Ptr> stages;
     return runtime.flow(relation, stages);
+}
+Ptr program_apply(Runtime& runtime, Node* relation, Ptr) {
+    auto terms=runtime.terms(relation);
+    if(terms.empty() || !is_symbol_text(runtime,terms.front(),"apply"))return relation;
+    if(terms.size()!=3)throw std::runtime_error("usage: apply :PROGRAM :(ARGUMENTS ...)");
+    auto program=runtime.reduce(terms[1]);auto arguments=runtime.reduce(terms[2]);
+    if(!runtime.is_name(program) || !runtime.is_name(arguments))throw std::runtime_error("apply requires reified program and argument products");
+    auto head=runtime.as_name(program)->target,tail=runtime.as_name(arguments)->target;
+    auto forms=runtime.is_relation(head)?runtime.terms(runtime.as_node(head)):std::vector<Ptr>{head};
+    if(!runtime.is_unit(tail)) {
+        auto values=runtime.is_relation(tail)?runtime.terms(runtime.as_node(tail)):std::vector<Ptr>{tail};
+        forms.insert(forms.end(),values.begin(),values.end());
+    }
+    return runtime.arena().make_relation(forms);
 }
 
 // -----------------------------------------------------------------------------
@@ -1518,6 +1529,15 @@ Ptr Reducer::reduce_relation(
             break;
         }
     }
+    // Host inspection must see the retained alias before callable expansion.
+    for (auto spelling : {"?", "help"}) {
+        auto program = runtime_.registry().find(runtime_.intern(spelling));
+        if (!program) continue;
+        Ptr inspected = program.invoke(runtime_, relation, program.context);
+        if (inspected != relation) return inspected;
+    }
+    Ptr expanded = runtime_.application(relation);
+    if (expanded != relation) return expanded;
     // Registered relation Programs get first refusal anywhere in the product.
     // Lazy foreign resolution is restricted to its consumer/head position.
     for (Ptr term : runtime_.terms(relation)) {
@@ -1571,6 +1591,8 @@ Runtime::Runtime()
       reducer_(*this) {
 
     define("truth", &program_truth);
+    define("apply", &program_apply);
+    define("demand", &program_query);
     define("if", &program_if);
     define("for", &program_for);
     define(":=", &program_bind);
@@ -1638,6 +1660,8 @@ Ptr Runtime::read(
 Ptr Runtime::reduce(
     Ptr form
 ) {
+    ++reduction_depth_;
+    struct Depth { unsigned& value; ~Depth() { --value; } } scope{reduction_depth_};
     return
         reducer_.reduce(
             form
@@ -1840,6 +1864,32 @@ std::vector<Cell> Runtime::capture_bindings() const {
     saved.reserve(cells_.size());
     for (const auto& [symbol, cell] : cells_) saved.push_back(*cell);
     return saved;
+}
+
+Ptr Runtime::application(Ptr form) {
+    if (!is_relation(form)) return form;
+    auto forms = terms(as_node(form));
+    for(auto term:forms)
+        for(auto orientation:{":=","=","|",":"})
+            if(is_symbol_text(*this,term,orientation))return form;
+    std::vector<Symbol*> seen;
+    bool changed = false;
+    while (!forms.empty() && is_symbol(forms.front())) {
+        auto symbol = as_symbol(forms.front());
+        // Core/host programs retain their explicit dispatch contracts.
+        if (registry().find(symbol)) break;
+        auto retained = binding(symbol);
+        if (!retained || (!is_symbol(retained) && !is_relation(retained))) break;
+        if (std::find(seen.begin(), seen.end(), symbol) != seen.end() || seen.size() >= 64)
+            throw std::runtime_error("cyclic callable binding: " + symbol->text);
+        seen.push_back(symbol);
+        auto head = is_relation(retained) ? terms(as_node(retained)) : std::vector<Ptr>{retained};
+        if (head.empty()) break;
+        head.insert(head.end(), forms.begin() + 1, forms.end());
+        forms = std::move(head);
+        changed = true;
+    }
+    return changed ? product(std::move(forms)) : form;
 }
 
 void Runtime::restore_bindings(const std::vector<Cell>& saved) {

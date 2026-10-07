@@ -10,6 +10,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <functional>
 
 namespace hirari {
 
@@ -41,9 +42,14 @@ public:
         seed::Ptr form,
         ProcessResult& result
     );
+    static std::string executable_path(const std::string& name);
 
     // Explicit executable paths are values, not parser tokens or shell command strings.
-    seed::Ptr execute(seed::Runtime&, const std::string& path, const std::vector<seed::Ptr>& arguments);
+    seed::Ptr execute(seed::Runtime&, const std::string& path, const std::vector<seed::Ptr>& arguments, seed::Node* invocation = nullptr);
+    struct StreamProgram { std::wstring executable; std::vector<std::string> prefix; };
+    void stream_resolver(std::function<StreamProgram(seed::Symbol*)> resolver) { stream_resolver_ = std::move(resolver); }
+    void streaming(bool enabled) { streaming_ = enabled; }
+    void opaque_values(std::function<bool(seed::Ptr)> predicate) { opaque_values_ = std::move(predicate); }
 
     // Hirari marks exactly one Seed form as the
     // foreground/root evaluation.
@@ -79,6 +85,8 @@ private:
         seed::Symbol* symbol = nullptr;
 
         std::wstring executable;
+        std::vector<std::string> prefix;
+        bool script = false;
     };
 
     struct Stage {
@@ -133,7 +141,8 @@ private:
 
     seed::Ptr run_pipeline(
         seed::Runtime& runtime,
-        std::vector<Stage> stages
+        std::vector<Stage> stages,
+        bool passthrough = false
     );
 
     std::string argument(
@@ -149,11 +158,16 @@ private:
     );
 
     Host& host_;
+    seed::Runtime& runtime_;
 
     std::unordered_map<
         seed::Symbol*,
         std::unique_ptr<ForeignProgram>
     > programs_;
+    std::unordered_map<seed::Symbol*, std::unique_ptr<ForeignProgram>> stream_programs_;
+    std::function<StreamProgram(seed::Symbol*)> stream_resolver_;
+    bool streaming_ = false;
+    std::function<bool(seed::Ptr)> opaque_values_;
 
     std::unique_ptr<ConPtySession>
         conpty_;
@@ -161,6 +175,8 @@ private:
     seed::Ptr foreground_root_ =
         nullptr;
     std::vector<seed::Ptr> foreground_stack_;
+    unsigned foreground_depth_ = 0;
+    std::vector<unsigned> foreground_depths_;
 
     std::atomic_int last_status_{0};
 };

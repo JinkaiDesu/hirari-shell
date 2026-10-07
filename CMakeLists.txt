@@ -21,10 +21,12 @@ add_library(hirari_runtime STATIC
     hirari/conpty.cpp
     hirari/process.cpp
     hirari/shell.cpp
+    hirari/shell_help.cpp
     hirari/wire.cpp
     hirari/unity_client.cpp
     hirari/unity.cpp
     hirari/world.cpp
+    hirari/vocabulary.cpp
 )
 
 target_include_directories(hirari_runtime
@@ -106,6 +108,13 @@ if(BUILD_TESTING)
             target_compile_options(hirari_integration_tests PRIVATE /W4 /permissive- /utf-8)
         endif()
         add_test(NAME hirari_integration COMMAND hirari_integration_tests $<TARGET_FILE:hirari_test_program>)
+        add_executable(hirari_shell_completion_tests tests/shell_completion_tests.cpp)
+        target_link_libraries(hirari_shell_completion_tests PRIVATE hirari_runtime)
+        if(MSVC)
+            target_compile_options(hirari_shell_completion_tests PRIVATE /W4 /permissive- /utf-8)
+        endif()
+        add_test(NAME hirari_shell_completion COMMAND hirari_shell_completion_tests $<TARGET_FILE:hirari_test_program>)
+        set_tests_properties(hirari_shell_completion PROPERTIES TIMEOUT 30)
         set_tests_properties(hirari_integration PROPERTIES TIMEOUT 30)
     endif()
     add_test(NAME hirari_eval_name COMMAND hirari --eval ":foo")

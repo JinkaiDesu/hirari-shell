@@ -562,7 +562,7 @@ ProcessHost::ProcessHost(
     seed::Runtime& runtime,
     Host& host
 )
-    : host_(host) {
+    : host_(host),runtime_(runtime) {
     // Use Seed's orientation law, specializing foreign stages as live pipes.
     runtime.define("truth", &ProcessHost::truth, this);
     runtime.define("cd", &ProcessHost::directory, this);
@@ -577,6 +577,13 @@ ProcessHost::ProcessHost(
 }
 
 ProcessHost::~ProcessHost() { conpty_.reset(); }
+std::string ProcessHost::executable_path(const std::string& name) {
+#ifdef _WIN32
+    return narrow(find_executable(name));
+#else
+    (void)name;return {};
+#endif
+}
 
 seed::Ptr ProcessHost::truth(seed::Runtime& runtime, seed::Node* relation, seed::Ptr) {
     auto terms = runtime.terms(relation);
@@ -659,10 +666,14 @@ void ProcessHost::begin_foreground(
     }
 
     foreground_stack_.push_back(foreground_root_);
+    foreground_depths_.push_back(foreground_depth_);
+    foreground_depth_=runtime_.reduction_depth()+1;
     foreground_root_ = root;
 }
 
 void ProcessHost::end_foreground() {
+    foreground_depth_=foreground_depths_.empty()?0:foreground_depths_.back();
+    if(!foreground_depths_.empty())foreground_depths_.pop_back();
     foreground_root_ = foreground_stack_.empty() ? nullptr : foreground_stack_.back();
     if (!foreground_stack_.empty()) foreground_stack_.pop_back();
 }
@@ -796,9 +807,17 @@ seed::Ptr ProcessHost::pipe(
     if (canonical == relation) return relation;
     bool has_foreign_stage = false;
     for (seed::Ptr segment : segments) {
-        if (static_cast<ProcessHost*>(context)->foreign_program(runtime, segment))
+        if (auto p=static_cast<ProcessHost*>(context)->foreign_program(runtime, segment);p && !p->script)
             has_foreign_stage = true;
     }
+    if (!has_foreign_stage) return runtime.reduce(canonical);
+    // A process composition edge remains an edge even when its producer has no argv.
+    // Do not confuse that bare program with one of the consumer's scalar arguments.
+    seed::Ptr stream_product=segments.front();
+    if(runtime.is_symbol(stream_product) && static_cast<ProcessHost*>(context)->foreign_program(runtime,stream_product))
+        stream_product=runtime.arena().make_relation({stream_product});
+    for(std::size_t i=1;i<segments.size();++i)stream_product=runtime.compose(segments[i],stream_product);
+    canonical=stream_product;
 
     std::vector<Stage> stages;
     if (!static_cast<ProcessHost*>(context)->build_pipeline(runtime, canonical, stages)) {
@@ -809,7 +828,8 @@ seed::Ptr ProcessHost::pipe(
     }
     if (stages.size() != segments.size())
         throw std::runtime_error("pipeline contains an unresolved or non-process stage");
-    return static_cast<ProcessHost*>(context)->run_pipeline(runtime, std::move(stages));
+    auto self=static_cast<ProcessHost*>(context);
+    return self->run_pipeline(runtime, std::move(stages), self->streaming_ && runtime.reduction_depth()==self->foreground_depth_);
 }
 
 // =============================================================================
@@ -821,6 +841,8 @@ ProcessHost::foreign_program(
     seed::Runtime& runtime,
     seed::Ptr form
 ) {
+    if(runtime.is_symbol(form) && runtime.binding(runtime.as_symbol(form)))form=runtime.arena().make_relation({form});
+    form=runtime.application(form);
     seed::Symbol* symbol =
         nullptr;
 
@@ -887,6 +909,13 @@ ProcessHost::foreign_program(
         resolved.invoke !=
             &ProcessHost::invoke
     ) {
+        if(stream_resolver_) {
+            auto stream=stream_resolver_(symbol);
+            if(!stream.executable.empty()) {
+                auto& p=stream_programs_[symbol];if(!p)p=std::make_unique<ForeignProgram>();
+                *p={this,symbol,std::move(stream.executable),std::move(stream.prefix),true};return p.get();
+            }
+        }
         return nullptr;
     }
 
@@ -920,6 +949,9 @@ std::string ProcessHost::argument(
         runtime.reduce(
             form
         );
+
+    if (opaque_values_ && opaque_values_(value))
+        throw std::runtime_error("an opaque runtime reference cannot cross native argv or a byte-stream script boundary; use a structured Seed call");
 
     ProcessResult process;
 
@@ -1025,6 +1057,7 @@ bool ProcessHost::build_pipeline(
     seed::Ptr form,
     std::vector<Stage>& stages
 ) {
+    form = runtime.application(form);
     ForeignProgram* program =
         foreign_program(
             runtime,
@@ -1043,7 +1076,7 @@ bool ProcessHost::build_pipeline(
         stages.push_back(
             Stage{
                 program,
-                {}
+                program->prefix
             }
         );
 
@@ -1065,6 +1098,7 @@ bool ProcessHost::build_pipeline(
 
     stage.program =
         program;
+    stage.arguments = program->prefix;
 
     // A bare binary Program product is consumer-first composition.
     // Longer argv products use explicit nested producer relations; their bare
@@ -1181,14 +1215,15 @@ seed::Ptr ProcessHost::invoke(
 }
 
 seed::Ptr ProcessHost::execute(seed::Runtime& runtime, const std::string& path,
-                              const std::vector<seed::Ptr>& arguments) {
+                              const std::vector<seed::Ptr>& arguments,seed::Node* invocation) {
 #ifdef _WIN32
     auto executable = find_executable(path);
     if (executable.empty()) throw std::runtime_error("program not found: " + path);
     ForeignProgram program{this, runtime.intern(path), std::move(executable)};
     Stage stage{&program, {}};
     for (auto value : arguments) stage.arguments.push_back(argument(runtime, value));
-    return run_pipeline(runtime, {std::move(stage)});
+    (void)invocation;
+    return run_pipeline(runtime, {std::move(stage)}, streaming_ && runtime.reduction_depth()==foreground_depth_);
 #else
     throw std::runtime_error("OS process adapter requires Windows");
 #endif
@@ -1217,10 +1252,7 @@ seed::Ptr ProcessHost::run(
     // streams/pipes instead.
     const bool foreground =
         host_.terminal_capable() &&
-        foreground_root_ ==
-            static_cast<seed::Ptr>(
-                relation
-            ) &&
+        runtime.reduction_depth()==foreground_depth_ &&
         stages.size() == 1;
 
     if (!foreground) {
@@ -1228,7 +1260,7 @@ seed::Ptr ProcessHost::run(
             runtime,
             std::move(
                 stages
-            )
+            ), streaming_ && runtime.reduction_depth()==foreground_depth_
         );
     }
 
@@ -1277,7 +1309,7 @@ seed::Ptr ProcessHost::run(
 
 seed::Ptr ProcessHost::run_pipeline(
     seed::Runtime& runtime,
-    std::vector<Stage> stages
+    std::vector<Stage> stages, bool passthrough
 ) {
 #ifdef _WIN32
 
@@ -1330,6 +1362,12 @@ seed::Ptr ProcessHost::run_pipeline(
 
     Handle null_input =
         make_null_input();
+    if(passthrough) {
+        HANDLE input=nullptr;
+        if(!DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_INPUT_HANDLE),GetCurrentProcess(),&input,0,TRUE,DUPLICATE_SAME_ACCESS))
+            throw std::runtime_error(windows_error(GetLastError()));
+        null_input=Handle(input);
+    }
 
     auto spawn_stage =
         [&job](
@@ -1520,6 +1558,9 @@ seed::Ptr ProcessHost::run_pipeline(
                 .get(),
             err
         );
+        if(passthrough){if(!out.empty())host_.write(out);if(!err.empty())host_.error(err);out.clear();err.clear();}
+        if(out.size()>16*1024*1024 || err.size()>16*1024*1024)
+            throw std::runtime_error("captured output exceeds 16 MiB; use live streams or an artifact file");
 
         for (
             Spawned& process :
@@ -1598,12 +1639,15 @@ seed::Ptr ProcessHost::run_pipeline(
             .get(),
         err
     );
+    if(passthrough){host_.write(out);host_.error(err);out.clear();err.clear();}
 
     last_status_ =
         static_cast<int>(
             processes.back()
                 .status
         );
+    if(last_status_.load()==0)
+        for(const auto& process:processes)if(process.status!=0){last_status_=static_cast<int>(process.status);break;}
 
     return make_result(
         runtime,

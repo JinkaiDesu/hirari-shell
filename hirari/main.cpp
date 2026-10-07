@@ -82,12 +82,12 @@ int main(int argc, char** argv) {
                        "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions, one per line; grouped expressions may span lines.\n");
             return 0;
         }
-        if (args.size() < 2 || (args[0] != "--eval" && args[0] != "--file") || (args[0] == "--eval" && args.size() != 2)) {
+        if (args.size() < 2 || (args[0] != "--eval" && args[0] != "--file" && args[0] != "--stream-file") || (args[0] == "--eval" && args.size() != 2)) {
             host.error("usage: hirari [--eval SOURCE | --file PATH [arguments]]\n");
             return 2;
         }
         if (args[0] == "--eval") shell.execute(args[1]);
-        else shell.execute_file(hirari::text_path(args[1]), {args.begin() + 2, args.end()});
+        else {shell.processes().streaming(args[0]=="--stream-file");shell.execute_file(hirari::text_path(args[1]), {args.begin() + 2, args.end()});}
         return shell.status();
     } catch (const std::exception& error) {
         host.error(std::string("error: ") + error.what() + '\n');

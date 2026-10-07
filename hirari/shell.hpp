@@ -5,11 +5,13 @@
 #include "seed/seed.hpp"
 #include "hirari/unity.hpp"
 #include "hirari/world.hpp"
+#include "hirari/vocabulary.hpp"
 
 #include <cstdint>
 #include <exception>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace hirari {
 
@@ -75,6 +77,9 @@ private:
     static seed::Ptr script_builtin(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr script_argument(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr exec(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr help(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr vocabulary(seed::Runtime&, seed::Node*, seed::Ptr);
+    void wait_foreground();
     seed::Ptr evaluate(std::string_view source, bool display = true);
     seed::Ptr evaluate_script(const std::filesystem::path& path, std::vector<seed::Ptr> arguments = {}, bool local = false);
     std::filesystem::path find_script(const std::string& name, bool explicit_file = false) const;
@@ -100,6 +105,9 @@ private:
 
     UnityProgram unity_;
     WorldHost worlds_;
+    std::unique_ptr<Vocabulary> vocabulary_;
+    bool interactive_session_ = false;
+    std::unordered_set<seed::Ptr> descriptions_;
     int execution_status_ = 0;
     std::string pending_;
 };

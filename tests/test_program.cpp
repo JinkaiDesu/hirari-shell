@@ -24,6 +24,7 @@ int main(int argc,char** argv) {
         std::sort(lines.begin(),lines.end());for(const auto& s:lines)std::cout<<s<<'\n';return 0;
     }
     if(a[0]=="relay"){std::cout<<std::cin.rdbuf();return 0;}
+    if(a[0]=="relay-live"){std::string s;while(std::getline(std::cin,s))std::cout<<s<<'\n'<<std::flush;return 0;}
     if(a[0]=="environment"){
 #ifdef _WIN32
         DWORD n=GetEnvironmentVariableW(L"SKUNK_WORLD",nullptr,0);std::wstring s(n,L'\0');

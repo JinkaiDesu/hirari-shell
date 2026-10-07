@@ -345,6 +345,7 @@ private:
 class Runtime {
 public:
     Runtime();
+    unsigned reduction_depth() const noexcept { return reduction_depth_; }
 
     Arena& arena() noexcept {
         return arena_;
@@ -434,6 +435,8 @@ public:
     // Pure orientation changes: no evaluation or host/process discovery.
     Ptr compose(Ptr consumer, Ptr producer);
     Ptr flow(Node* relation, std::vector<Ptr>& stages);
+    // Expand a callable binding head structurally, without reducing its arguments.
+    Ptr application(Ptr form);
 
     // -------------------------------------------------------------------------
     // Stable cells
@@ -525,6 +528,7 @@ private:
     > cells_;
 
     ResolverFn resolver_ = nullptr;
+    unsigned reduction_depth_ = 0;
     Ptr resolver_context_ = nullptr;
 };
 

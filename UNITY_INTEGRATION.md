@@ -2,7 +2,7 @@
 
 Hirari remains independently runnable. No Unity connection is attempted until a
 `unity` operation needs it. This integration does not invoke another runtime or
-interpreter. The Seed evaluator sources are unchanged.
+interpreter. Domain tooling remains ordinary Seed programs and external tools.
 
 ## Build and tests
 
@@ -38,8 +38,9 @@ form. `--file` evaluates UTF-8 expressions in order, one per completed line;
 quoted or grouped expressions can span lines, and UTF-8 BOMs are accepted.
 Script files keep the caller's working directory. World opening sets the world
 root explicitly. Script errors include file/line diagnostics and return nonzero.
-External program failures stop script execution. Foreground interactive tools
-belong in the interactive shell. This adds no new Seed syntax or comment form.
+External program failures stop script execution. A script can launch a foreground
+interactive tool when Hirari has a console; it resumes after that tool exits.
+Redirected/non-console calls use captured or streaming process execution.
 
 ## Unity primitives and identity
 
@@ -58,7 +59,7 @@ it never automatically replays the failed operation. A broker Fault keeps a
 healthy connection available. Requests have a five-second timeout and support
 host interruption. A timed-out mutation may already have executed.
 
-Seed `=` retains its existing lazy RHS program form. In particular,
+Seed `NAME := FORM` and `FORM = NAME` retain the same lazy program form. In particular,
 `go := unity new t "GenericProof"` runs New again whenever `go` is demanded.
 Use the **explicit host capture** operation for a retained capability value:
 
@@ -217,7 +218,7 @@ exec "C:/Program Files/Some Tool/tool.exe" "literal argument"
 
 An unbound command resolves to a builtin first, then a native executable using
 the existing PATH policy, then a `.seed` file. Seed lookup searches the calling
-script's directory, the current directory, `HIRARI_PATH`, and PATH, in that
+script's directory, the current directory, `SKUNK_SYSTEM/Commands`, `HIRARI_PATH`, and PATH, in that
 order. `HIRARI_PATH` uses semicolon-separated directories on Windows. An
 explicit `.seed` filename or `run` selects a Seed program without competing
 with an executable of the same stem. Nested `run`/`source` includes resolve
@@ -244,15 +245,89 @@ the failed tool's stdout/stderr and stop the calling script. `exec` uses the
 ordinary native process machinery synchronously with captured streams; it
 does not pass a command string to PowerShell/Bash or start an interactive
 foreground terminal. Ordinary unquoted executable commands retain their
-existing foreground behavior. Scripts currently reject interactive children.
+existing foreground behavior, including when called from a script.
 
 Content can be generated, built and loaded while the player stays running.
 AssetBundle compilation requires an external compatible Unity Editor; loading
 a built bundle uses the existing player AssetBundle API. Neither workflow
 requires a new Seed operator or a content-specific runtime class.
 
-Remaining limits: callable binding heads do not yet forward added arguments;
-mixed `.seed`/native byte-stream pipeline stages do not yet share a stream
-adapter; shell vocabulary is session-local; reflective help is not implemented.
-Prefix `?` retains its shipped demand behavior. These limits are distinct from
-command-file discovery and are not silently changed by this integration.
+## Callable vocabulary and help
+
+```text
+recent := git "log"
+recent "--oneline"
+? recent
+recent help
+apply :(exec "program.exe" "fixed argument") (args)
+```
+
+Callable heads expand retained structure and append arguments without reparsing
+text. Alias cycles/depth are bounded. Names, text and Unit stay distinct in
+same-evaluator script calls. `apply` invokes a reified program with a reified
+argument product; it is also useful for forwarding a command file's `args`.
+
+In Hirari, `? SUBJECT`, `SUBJECT help` and `help SUBJECT` inspect the subject
+without invoking it. Builtins expose usage, aliases expose definitions and
+revisions, files expose their origin and leading comments, and retained CLR
+objects expose public member metadata without executing getters. Native command
+documentation is invoked explicitly with `exec "path" "--help"` or a quoted
+`"help"` argument. `demand SUBJECT` preserves explicit Seed evaluation. Pure
+Seed retains its demand primitive; Hirari supplies reflective help above it.
+`unity help TARGET ["MEMBER" OFFSET COUNT]` paginates CLR metadata.
+
+## Persistence and lifetimes
+
+Interactive top-level definitions save automatically to
+`%LOCALAPPDATA%/Hirari/vocabulary`. `HIRARI_STATE` selects a store; `-` disables
+it. Noninteractive scripts and local calls remain transient unless explicitly
+saved. `source` can export definitions into the interactive caller.
+
+```text
+vocab save :recent "Show repository history"
+vocab history :recent
+vocab restore :recent 1
+vocab forget :recent
+vocab use "world-local vocabulary"
+```
+
+The snapshot stores tagged forms, annotations and revisions, never startup code
+or runtime pointers. Loading does not execute definitions. Commits flush and
+atomically replace the previous snapshot under an exclusive write lock; damage,
+read-only storage, or size/history limits leave the shell usable and the previous
+file intact. Concurrent writes merge unrelated definitions; existing sessions
+must reload with `vocab use` to see another session's changes. Same-name updates
+use commit order. Limits are 16 MiB and 10,000 revisions; compaction/export is not
+implemented. A saved program can reconstruct/find a live object, but an opaque
+CLR identity itself cannot be saved. This is definition persistence, not closure,
+process, database, or Unity resource persistence.
+
+Broker references belong to one pipe connection. Disconnect, shell death, or
+explicit `unity disconnect` releases that connection's handles on Unity's thread.
+Reconnecting receives a new session; reacquire objects with `find`/`type`.
+Releasing handles does not destroy Unity objects or dispose CLR resources.
+The broker has a combined 65,536-handle limit and an explicit generic limit
+setter. Arrays remain references at every size; the control frame remains bounded.
+
+`unity wait REQUEST ["completionMember" TIMEOUT_MS]` polls on the shell side
+without blocking Unity frames. The default is `isDone`, 10 seconds; timeout is
+bounded at 300 seconds. Ctrl+C or timeout cancels the wait; the underlying Unity
+operation can continue. It is not an operation rollback.
+
+## Live script/native streams
+
+Pipelines with a native stage can run `.seed` stages as independent Hirari
+`--stream-file` processes with live stdin/stdout. Their native child output is
+forwarded as it arrives. A failed upstream stage makes the pipeline fail even
+when the final stage succeeds. Process cancellation uses the existing job owner.
+Pure Seed composition remains structured in the same evaluator.
+
+This boundary carries bytes and ordinary OS arguments. It does not export the
+caller's bindings, closures or CLR handles. Opaque references passed as native
+argv fail explicitly; use a structured Seed call for them. Captured native output
+has a 16 MiB budget; use live streams or artifact files for larger outputs.
+
+Known limits: synchronous reflected file reads still execute on Unity's thread;
+handles avoid bulk wire transfer but not I/O, allocations or GPU uploads. The
+arena retains evaluated forms during the session. No database-backed namespace,
+automatic object destruction, or representation materialization is introduced.

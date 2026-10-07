@@ -51,6 +51,14 @@ std::string shell_environment(const wchar_t* key) {
 }
 std::string script_text(seed::Runtime& r, seed::Ptr form) {
     auto value = r.reduce(form);
+    ProcessResult process;
+    if(ProcessHost::unpack(r,value,process)) {
+        if(process.status!=0)throw std::runtime_error("path-producing program failed: "+process.err);
+        auto text=process.out;while(!text.empty() && (text.back()=='\n' || text.back()=='\r'))text.pop_back();
+        if(text.empty() || text.find_first_of("\r\n")!=std::string::npos || text.find('\0')!=std::string::npos)
+            throw std::runtime_error("path-producing program must return one nonempty path");
+        return text;
+    }
     if (!r.is_literal(value)) throw std::runtime_error("file/program path requires a quoted string");
     return r.as_literal(value)->bytes;
 }
@@ -76,7 +84,36 @@ Shell::Shell(
     seed_.define("run", &Shell::script_builtin, this);
     seed_.define("arg", &Shell::script_argument, this);
     seed_.define("args", &Shell::script_argument, this);
+    seed_.define("argc", &Shell::script_argument, this);
+    seed_.define("script-directory", &Shell::script_argument, this);
+    seed_.define("path", &Shell::script_argument, this);
     seed_.define("exec", &Shell::exec, this);
+    seed_.define("help", &Shell::help, this);
+    seed_.define("?", &Shell::help, this);
+    seed_.define("vocab", &Shell::vocabulary, this);
+    processes_.opaque_values([this](seed::Ptr value) { return unity_.foreign(value) != nullptr; });
+    processes_.stream_resolver([this](seed::Symbol* symbol) {
+        auto path=find_script(symbol->text);if(path.empty())return ProcessHost::StreamProgram{};
+#ifdef _WIN32
+        std::wstring executable(32768,L'\0');auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
+        if(!length || length>=executable.size())throw std::runtime_error("cannot locate Hirari for script stream stage");
+        executable.resize(length);
+        auto sibling=std::filesystem::path(executable).parent_path()/L"hirari.exe";
+        if(std::filesystem::is_regular_file(sibling))executable=sibling.wstring();
+        return ProcessHost::StreamProgram{executable,{"--stream-file",path_text(path)}};
+#else
+        return ProcessHost::StreamProgram{};
+#endif
+    });
+    auto directory=shell_environment(L"HIRARI_STATE");
+    if(directory.empty()){
+        auto local=shell_environment(L"LOCALAPPDATA");
+        if(!local.empty())directory=path_text(text_path(local)/"Hirari"/"vocabulary");
+    }
+    if(!directory.empty() && directory!="-") {
+        vocabulary_=std::make_unique<Vocabulary>(text_path(directory));
+        try{vocabulary_->load(seed_);}catch(const std::exception& error){host_.error(std::string("vocabulary unavailable: ")+error.what()+"\n");}
+    }
 }
 
 std::filesystem::path Shell::find_script(const std::string& name, bool explicit_file) const {
@@ -89,6 +126,8 @@ std::filesystem::path Shell::find_script(const std::string& name, bool explicit_
     std::vector<std::filesystem::path> roots;
     if (!script_frames_.empty()) roots.push_back(script_frames_.back().path.parent_path());
     roots.push_back(std::filesystem::current_path());
+    auto system=shell_environment(L"SKUNK_SYSTEM");
+    if(!system.empty())roots.push_back(text_path(system)/"Commands");
     if (!explicit_file && !file.has_parent_path()) {
         for (const auto* key : {L"HIRARI_PATH", L"PATH"}) {
             std::istringstream paths(shell_environment(key));
@@ -146,10 +185,23 @@ seed::Ptr Shell::script_builtin(seed::Runtime& r, seed::Node* relation, seed::Pt
 seed::Ptr Shell::script_argument(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
     auto terms = r.terms(relation);
     if (terms.empty() || !r.is_symbol(terms[0]) ||
-        (r.as_symbol(terms[0])->text != "arg" && r.as_symbol(terms[0])->text != "args")) return relation;
+        (r.as_symbol(terms[0])->text != "arg" && r.as_symbol(terms[0])->text != "args" &&
+         r.as_symbol(terms[0])->text != "argc" && r.as_symbol(terms[0])->text != "script-directory" && r.as_symbol(terms[0])->text != "path")) return relation;
     auto& shell = *static_cast<Shell*>(context);
+    if(r.as_symbol(terms[0])->text=="path") {
+        if(terms.size()<2)throw std::runtime_error("usage: path \"ROOT\" \"SEGMENT\" ...");
+        std::filesystem::path result;for(std::size_t i=1;i<terms.size();++i)result/=text_path(script_text(r,terms[i]));
+        return r.arena().make_literal(path_text(result.lexically_normal()));
+    }
     if (shell.script_frames_.empty()) throw std::runtime_error("arg/args require an active Seed program");
     const auto& arguments = shell.script_frames_.back().arguments;
+    if(r.as_symbol(terms[0])->text=="argc"){
+        if(terms.size()!=1)throw std::runtime_error("argc takes no arguments");return r.intern(std::to_string(arguments.size()));
+    }
+    if(r.as_symbol(terms[0])->text=="script-directory"){
+        if(terms.size()!=1)throw std::runtime_error("script-directory takes no arguments");
+        return r.arena().make_literal(path_text(shell.script_frames_.back().path.parent_path()));
+    }
     if (r.as_symbol(terms[0])->text == "args") {
         if (terms.size() != 1) throw std::runtime_error("args takes no arguments");
         return r.arena().make_name(r.product(arguments));
@@ -170,18 +222,14 @@ seed::Ptr Shell::exec(seed::Runtime& r, seed::Node* relation, seed::Ptr context)
     if (terms.empty() || !r.is_symbol(terms[0]) || r.as_symbol(terms[0])->text != "exec") return relation;
     if (terms.size() < 2) throw std::runtime_error("usage: exec \"executable\" [arguments]");
     auto path = script_text(r, terms[1]);
-    return static_cast<Shell*>(context)->processes_.execute(r, path, {terms.begin() + 2, terms.end()});
+    return static_cast<Shell*>(context)->processes_.execute(r, path, {terms.begin() + 2, terms.end()}, relation);
 }
 
-int Shell::run() {
-    host_.write("ƸӜƷ Hirari · Seed `/\n\n");
-    std::string line;
-    for (;;) {
+void Shell::wait_foreground() {
 #ifdef _WIN32
-        if (interactive()) {
             HANDLE input_handle = GetStdHandle(STD_INPUT_HANDLE);
             DWORD saved_mode = 0;
-            if (!GetConsoleMode(input_handle, &saved_mode)) break;
+            if (!GetConsoleMode(input_handle, &saved_mode)) throw std::runtime_error("foreground terminal input is unavailable");
             SetConsoleMode(input_handle, ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
             struct ModeGuard {
                 HANDLE input; DWORD mode;
@@ -253,8 +301,16 @@ int Shell::run() {
                 for (WORD repeat = 0; repeat < key.wRepeatCount; ++repeat) terminal_input(bytes);
             }
             processes_.reap_foreground();
-            continue;
-        }
+#endif
+}
+
+int Shell::run() {
+    interactive_session_ = true;
+    host_.write("ƸӜƷ Hirari · Seed `/\n\n");
+    std::string line;
+    for (;;) {
+#ifdef _WIN32
+        if (interactive()) { wait_foreground(); continue; }
 #endif
         host_.write(waiting() ? ".....> " : "hirari> ");
 #ifdef _WIN32
@@ -412,9 +468,18 @@ void Shell::interrupt() {
 }
 
 seed::Ptr Shell::evaluate(std::string_view source, bool display) {
+    auto before=interactive_session_ && script_frames_.empty()?seed_.capture_bindings():std::vector<seed::Cell>{};
     seed::Ptr form = seed_.read(source);
     if (seed_.is_symbol(form) && !seed_.binding(seed_.as_symbol(form)))
         form = seed_.arena().make_relation({form});
+    bool inspecting=false;
+    if(seed_.is_relation(form)) {
+        auto terms=seed_.terms(seed_.as_node(form));
+        inspecting=!terms.empty() && ((seed_.is_symbol(terms.front()) &&
+            (seed_.as_symbol(terms.front())->text=="?" || seed_.as_symbol(terms.front())->text=="help")) ||
+            (seed_.is_symbol(terms.back()) && seed_.as_symbol(terms.back())->text=="help"));
+    }
+    if(!inspecting)form = seed_.application(form);
     processes_.begin_foreground(form);
     struct ForegroundGuard {
         ProcessHost& processes;
@@ -431,6 +496,14 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
     execution_status_ = 0;
     ProcessResult process;
     if (ProcessHost::unpack(seed_, result, process)) execution_status_ = process.status;
+    if(vocabulary_ && interactive_session_ && script_frames_.empty() && execution_status_==0) {
+        for(const auto& cell:seed_.capture_bindings()) {
+            auto old=std::find_if(before.begin(),before.end(),[&](const auto& v){return v.symbol==cell.symbol;});
+            if(!cell.head || (old!=before.end() && old->revision==cell.revision))continue;
+            try {vocabulary_->save(seed_,cell.symbol->text,vocabulary_->annotation(cell.symbol->text),[this](auto p){return unity_.foreign(p)!=nullptr;});}
+            catch(const std::exception& error){host_.error("definition remains session-local: "+cell.symbol->text+": "+error.what()+"\n");}
+        }
+    }
     if (display && !processes_.interactive()) present(result);
     return result;
 }
@@ -480,7 +553,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
             if (host_.interrupted()) throw std::runtime_error("Seed program interrupted");
             present(result);
             result = evaluate(pending, false);
-            if (processes_.interactive()) throw std::runtime_error("interactive programs require the interactive shell");
+            if (processes_.interactive()) { wait_foreground(); execution_status_ = processes_.last_status(); result = seed_.arena().unit(); }
             if (execution_status_ != 0) {
                 present(result);
                 throw std::runtime_error("entry program returned status " + std::to_string(execution_status_));
@@ -529,6 +602,9 @@ void Shell::present(
 ) {
     if (!result || seed_.is_unit(result)) {
         return;
+    }
+    if (descriptions_.contains(result) && seed_.is_literal(result)) {
+        host_.write(seed_.as_literal(result)->bytes);return;
     }
 
     ProcessResult process;

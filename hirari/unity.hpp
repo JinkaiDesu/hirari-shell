@@ -18,6 +18,7 @@ public:
     UnityProgram(seed::Runtime&,Host&);
     UnityClient& client() noexcept { return client_; }
     const ForeignRef* foreign(seed::Ptr identity) const;
+    std::string describe(seed::Ptr identity, const std::string& member = {}, int offset = 0, int count = 32);
 private:
     static seed::Ptr invoke(seed::Runtime&,seed::Node*,seed::Ptr);
     static seed::Ptr opaque(seed::Runtime&,seed::Node*,seed::Ptr);
@@ -31,6 +32,7 @@ private:
     std::vector<seed::Ptr> list(seed::Ptr);
     void released(const wire::Value&);
     seed::Runtime& runtime_;
+    Host& host_;
     UnityClient client_;
     std::unordered_map<seed::Ptr,std::unique_ptr<ForeignRef>> foreign_;
     std::uint64_t next_identity_=1;

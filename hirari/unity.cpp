@@ -3,6 +3,8 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <chrono>
+#include <thread>
 namespace hirari {
 namespace {
 using K=wire::ValueKind;using M=wire::MessageKind;using V=wire::Value;
@@ -14,7 +16,16 @@ template<class T>T number(std::string_view s) {
 }
 bool symbol(seed::Runtime& r,seed::Ptr p,std::string_view s){return r.is_symbol(p)&&r.as_symbol(p)->text==s;}
 }
-UnityProgram::UnityProgram(seed::Runtime& r,Host& h):runtime_(r),client_(h){r.define("unity",&UnityProgram::invoke,this);}
+UnityProgram::UnityProgram(seed::Runtime& r,Host& h):runtime_(r),host_(h),client_(h){r.define("unity",&UnityProgram::invoke,this);}
+std::string UnityProgram::describe(seed::Ptr identity,const std::string& member,int offset,int count) {
+    client_.connect();auto target=reference(identity,false,false);
+    auto root=client_.request({M::Find,0,{V::string("reflection")}}).values.at(0);
+    try {
+        auto reply=client_.request({M::Call,0,{root,V::string("Describe"),V::i32(0),V::i32(-1),target,V::string(member),V::i32(offset),V::i32(count)}});
+        auto description=std::get<std::string>(reply.values.at(0).data);
+        client_.request({M::Release,0,{root}});return description;
+    } catch(...) {try{client_.request({M::Release,0,{root}});}catch(...){}throw;}
+}
 const ForeignRef* UnityProgram::foreign(seed::Ptr p)const {
     auto i=foreign_.find(p);return i==foreign_.end()?nullptr:i->second.get();
 }
@@ -180,6 +191,26 @@ seed::Ptr UnityProgram::run(seed::Node* relation) {
         return box(V::bytes(std::move(bytes)));
     }
     client_.connect();
+    if(op=="help") {
+        if(a.size()<3 || a.size()>6)throw std::runtime_error("usage: unity help TARGET [\"MEMBER\" OFFSET COUNT]");
+        auto integer=[&](std::size_t i,int fallback){return a.size()>i?number<int>(runtime_.print(runtime_.reduce(a[i]))):fallback;};
+        return runtime_.arena().make_literal(describe(a[2],a.size()>3?text(a[3]):std::string{},integer(4,0),integer(5,32)));
+    }
+    if(op=="wait") {
+        if(a.size()<3 || a.size()>5)throw std::runtime_error("usage: unity wait REQUEST [\"COMPLETION_MEMBER\" TIMEOUT_MS]");
+        auto request=reference(a[2],false,false);auto member=a.size()>3?text(a[3]):"isDone";
+        auto timeout=a.size()>4?number<unsigned>(runtime_.print(runtime_.reduce(a[4]))):10000u;
+        if(timeout>300000)throw std::runtime_error("wait timeout must be at most 300000 milliseconds");
+        auto end=std::chrono::steady_clock::now()+std::chrono::milliseconds(timeout);
+        for(;;){
+            if(host_.interrupted())throw std::runtime_error("wait interrupted; the underlying operation may continue");
+            auto ready=client_.request({M::Get,0,{request,V::string(member)}}).values.at(0);
+            if(ready.kind!=K::Boolean)throw std::runtime_error("completion member must be Boolean");
+            if(std::get<bool>(ready.data))return runtime_.reduce(a[2]);
+            if(std::chrono::steady_clock::now()>=end)throw std::runtime_error("wait timed out; the underlying operation may continue");
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+    }
     if(op=="batch") {
         if(a.size()!=3)throw std::runtime_error("usage: unity batch :((operation ...) (operation ...))");
         wire::Message batch{M::Batch,0,{}};std::vector<wire::Message> operations;
