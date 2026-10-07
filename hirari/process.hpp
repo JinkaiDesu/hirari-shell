@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 #include <functional>
+#include <optional>
 
 namespace hirari {
 
@@ -45,7 +46,8 @@ public:
     static std::string executable_path(const std::string& name);
 
     // Explicit executable paths are values, not parser tokens or shell command strings.
-    seed::Ptr execute(seed::Runtime&, const std::string& path, const std::vector<seed::Ptr>& arguments, seed::Node* invocation = nullptr);
+    seed::Ptr execute(seed::Runtime&, const std::string& path, const std::vector<seed::Ptr>& arguments, seed::Node* invocation = nullptr, std::optional<ProcessResult> input = {});
+    seed::Ptr redirect(seed::Runtime&, seed::Ptr producer, const std::string& path, bool append);
     struct StreamProgram { std::wstring executable; std::vector<std::string> prefix; };
     void stream_resolver(std::function<StreamProgram(seed::Symbol*)> resolver) { stream_resolver_ = std::move(resolver); }
     void streaming(bool enabled) { streaming_ = enabled; }
@@ -94,6 +96,7 @@ private:
 
         std::vector<std::string>
             arguments;
+        std::optional<ProcessResult> input;
     };
 
     static seed::Ptr truth(seed::Runtime&, seed::Node*, seed::Ptr);
@@ -126,11 +129,13 @@ private:
         seed::Runtime& runtime,
         seed::Ptr form
     );
+    bool is_explicit_program(seed::Runtime&, seed::Ptr);
 
     bool build_pipeline(
         seed::Runtime& runtime,
         seed::Ptr form,
-        std::vector<Stage>& stages
+        std::vector<Stage>& stages,
+        bool has_upstream = false
     );
 
     seed::Ptr run(
@@ -142,7 +147,8 @@ private:
     seed::Ptr run_pipeline(
         seed::Runtime& runtime,
         std::vector<Stage> stages,
-        bool passthrough = false
+        bool passthrough = false,
+        const std::wstring& output_file = {}, bool append = false
     );
 
     std::string argument(
@@ -165,6 +171,7 @@ private:
         std::unique_ptr<ForeignProgram>
     > programs_;
     std::unordered_map<seed::Symbol*, std::unique_ptr<ForeignProgram>> stream_programs_;
+    std::unordered_map<std::wstring, std::unique_ptr<ForeignProgram>> explicit_programs_;
     std::function<StreamProgram(seed::Symbol*)> stream_resolver_;
     bool streaming_ = false;
     std::function<bool(seed::Ptr)> opaque_values_;

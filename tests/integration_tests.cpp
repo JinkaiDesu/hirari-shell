@@ -22,7 +22,13 @@ struct MemoryHost:Host {
     void error(std::string_view s)override{std::lock_guard lock(mutex);err+=s;}
 };
 std::string quote(const std::string& s){std::string out="\"";for(char c:s){if(c=='\\'||c=='"')out+='\\';out+=c;}return out+'"';}
-void write_file(const std::filesystem::path& p,const std::string& s){std::ofstream out(p,std::ios::binary);out<<s;require(static_cast<bool>(out),"test fixture write failed");}
+void write_file(const std::filesystem::path& p,const std::string& s){
+    std::ofstream out(p,std::ios::binary);
+    auto prefix=s.starts_with("\xef\xbb\xbf")?3u:0u;
+    out<<s.substr(0,prefix);
+    if(p.extension()==".seed" && !s.substr(prefix).starts_with("#!"))out<<"#!/usr/bin/env hirari\n";
+    out<<s.substr(prefix);require(static_cast<bool>(out),"test fixture write failed");
+}
 struct Environment {
     std::wstring name;std::optional<std::wstring> previous;
     Environment(std::wstring n,std::wstring value):name(std::move(n)) {
@@ -124,27 +130,30 @@ void codec() {
 void unity() {
     TestServer server;Environment endpoint(L"SKUNK_UNITY_PIPE",win32::widen(server.endpoint));MemoryHost host;Shell shell(host);
     auto run=[&](const std::string& source){auto p=shell.execute(source);if(!p)throw std::runtime_error("shell failed: "+source+"\n"+host.err);return p;};
-    run("unity bind :t (unity type \"UnityEngine.GameObject\")");run("unity bind :go (unity new t \"GenericProof\")");
+    run("unity bind -t (unity type \"UnityEngine.GameObject\")");run("unity bind -go (unity new t \"GenericProof\")");
     auto go=shell.seed().reduce(shell.seed().binding(shell.seed().intern("go")));require(shell.unity().foreign(go)&&!shell.seed().is_literal(go),"object reference became text");
     require(shell.seed().print(run("unity get go \"name\""))=="\"GenericProof\"","get result");
     run("unity set go \"name\" \"RenamedProof\"");
     require(shell.seed().print(run("unity get go \"name\""))=="\"RenamedProof\"","set/get did not address the same object");
+    run("object-name := object() (unity get object \"name\")");
+    require(shell.seed().print(run("object-name go"))=="\"RenamedProof\"",
+            "Seed abstraction could not consume an opaque Unity handle");
     require(run("go")==go&&run("go")==go&&server.new_count==1,"capture did not retain opaque identity");
     run("unity find \"RenamedProof\"");
-    run("unity bind :booleanType (unity type \"System.Boolean\")");run("unity bind :stringType (unity type \"System.String\")");
-    run("unity call go \"SetActive\" :false");require(server.new_count==1,"call allocated a new object");run("unity call-exact go \"SetActive\" :(booleanType) :true");
-    run("unity call-generic go \"Echo\" :(stringType) \"hello\"");
-    run("unity call-generic-exact go \"Echo\" :(stringType) :(stringType) \"hello\"");
-    run("unity bind :other (unity new-exact t :(stringType) \"ExactProof\")");
-    run("unity bind :transformType (unity type \"UnityEngine.Transform\")");run("unity component go transformType");
-    run("unity bind :n (unity get go \"number\")");run("unity set go \"number\" n");
+    run("unity bind -booleanType (unity type \"System.Boolean\")");run("unity bind -stringType (unity type \"System.String\")");
+    run("unity call go \"SetActive\" -false");require(server.new_count==1,"call allocated a new object");run("unity call-exact go \"SetActive\" -(booleanType) -true");
+    run("unity call-generic go \"Echo\" -(stringType) \"hello\"");
+    run("unity call-generic-exact go \"Echo\" -(stringType) -(stringType) \"hello\"");
+    run("unity bind -other (unity new-exact t -(stringType) \"ExactProof\")");
+    run("unity bind -transformType (unity type \"UnityEngine.Transform\")");run("unity component go transformType");
+    run("unity bind -n (unity get go \"number\")");run("unity set go \"number\" n");
     require(shell.unity().foreign(shell.seed().reduce(shell.seed().binding(shell.seed().intern("n"))))->value.kind==K::Int64,"numeric result lost type");
-    run("unity bind :bytes (unity bytes \"00ff01\")");run("unity call go \"Echo\" bytes");
-    require(!shell.execute("unity set go \"name\" :notText"),"Name converted to string");
+    run("unity bind -bytes (unity bytes \"00ff01\")");run("unity call go \"Echo\" bytes");
+    require(!shell.execute("unity set go \"name\" -notText"),"Name converted to string");
     require(!shell.execute("unity get \"1\" \"name\""),"text reference accepted");
-    run("unity bind :results (unity batch :((type \"UnityEngine.GameObject\") (new (unity batch-ref 0) \"BatchProof\") (get (unity batch-ref 1) \"name\")))");
+    run("unity bind -results (unity batch -((type \"UnityEngine.GameObject\") (new (unity batch-ref 0) \"BatchProof\") (get (unity batch-ref 1) \"name\")))");
     require(shell.seed().print(run("unity at results 2"))=="\"BatchProof\"","batch primary result");
-    require(!shell.execute("unity batch :((get (unity batch-ref 0) \"name\"))"),"forward batch ref accepted");
+    require(!shell.execute("unity batch -((get (unity batch-ref 0) \"name\"))"),"forward batch ref accepted");
     require(!shell.execute("unity call go \"Fault\""),"broker Fault not surfaced");run("unity get go \"name\"");
     require(server.hellos==1&&server.connections==1,"connection is not persistent");
     run("unity release other");require(!shell.execute("unity get other \"name\""),"released reference reused");
@@ -197,14 +206,16 @@ void worlds_and_scripts() {
     auto saved=std::filesystem::current_path();require(!empty.execute("world open "+quote(path_text(failing))),"missing program accepted");require(!empty.worlds().current()&&std::filesystem::current_path()==saved,"first-open failure did not roll back");
 }
 void semantics_and_processes(const std::filesystem::path& helper) {
+    Fixtures streaming;
+    Environment stream_ack(L"HIRARI_STREAM_ACK",(streaming.root/L"first output received").wstring());
     Environment path(L"PATH",helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");MemoryHost host;Shell shell(host);
-    auto run=[&](std::string_view source){auto p=shell.execute(source);if(!p)throw std::runtime_error(host.err);return p;};
+    auto run=[&](std::string_view source){auto p=shell.execute(source);if(!p)throw std::runtime_error(std::string(source)+"\n"+host.err);return p;};
     run("greeting := \"hello\"");require(shell.seed().print(run("greeting"))=="\"hello\"","binding regression");
     run("\"reverse\" = greeting");require(shell.seed().print(run("greeting"))=="\"reverse\"","inverse binding regression");
-    require(shell.seed().is_name(run(":foo")),"Name became literal");require(shell.seed().is_literal(run("\"foo\"")),"literal became Name");require(shell.seed().is_unit(run("()")),"unit regression");
-    require(shell.seed().print(run("if :true \"yes\" \"no\""))=="\"yes\"","if true regression");require(shell.seed().print(run("if :false \"yes\" \"no\""))=="\"no\"","if false regression");
+    require(shell.seed().is_name(run("-foo")),"Name became literal");require(shell.seed().is_literal(run("\"foo\"")),"literal became Name");require(shell.seed().is_unit(run("()")),"unit regression");
+    require(shell.seed().print(run("if -true \"yes\" \"no\""))=="\"yes\"","if true regression");require(shell.seed().print(run("if -false \"yes\" \"no\""))=="\"no\"","if false regression");
     require(shell.seed().print(run("if (hirari_test_program emit) \"yes\" \"no\""))=="\"yes\"","process success condition");require(shell.seed().print(run("if (hirari_test_program fail) \"yes\" \"no\""))=="\"no\"","process failure condition");
-    run("item := \"previous\"");run("for :item :(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
+    run("item := \"previous\"");run("for -item -(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
     ProcessResult p;require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"z\" \"a\" | hirari_test_program sort"),p)&&p.out=="a\nz\n","pipeline regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"\" \"space value\" \"Ω\""),p)&&p.out=="\nspace value\nΩ\n","portable Unicode/empty argv regression");
     std::string special = "apostrophe'only";
@@ -213,16 +224,72 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     auto arguments = "hirari_test_program emit " + quote(special) + " " + quote(literalPath) + " " + quote(quoted);
     require(ProcessHost::unpack(shell.seed(),run(arguments),p)&&p.out==special+"\n"+literalPath+"\n"+quoted+"\n","native literal apostrophe/backslash/quote argv regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program relay (hirari_test_program emit \"hello\")"),p)&&p.out=="hello\n","consumer composition regression");
-    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program delayed | hirari_test_program observe"),p)&&p.out.starts_with("LIVE\n"),"pipe execution is not live");
+    for (auto spelling : {"hirari_test_program relay \"answer Ω\\n\"?",
+                          "\"answer Ω\\n\"? | hirari_test_program relay",
+                          "hirari_test_program relay(\"answer Ω\\n\"?)"})
+        require(ProcessHost::unpack(shell.seed(),run(spelling),p)&&p.status==0&&p.out=="answer Ω\n", "materialized answer application/flow mismatch");
+    require(ProcessHost::unpack(shell.seed(),run("(exec \"hirari_test_program\" fail)? | hirari_test_program relay"),p)&&p.status==7, "materialized process answer lost failure status");
+    run("large-answer := "+quote(std::string(128*1024, 'x')));
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program relay large-answer?"),p)&&p.status==0&&p.out==std::string(128*1024,'x'), "materialized answer deadlocked or truncated beyond a pipe buffer");
+    require(ProcessHost::unpack(shell.seed(),run("exec \"hirari_test_program\" emit \"argv\"?"),p)&&p.out=="argv\n", "exec treated explicit argv as stdin");
+    for(auto source:{"exec \"hirari_test_program\" emit \"z\" \"a\" | hirari_test_program sort",
+                     "hirari_test_program emit \"z\" \"a\" | exec \"hirari_test_program\" sort",
+                     "exec \"hirari_test_program\" emit \"z\" \"a\" | exec \"hirari_test_program\" sort"})
+        require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.status==0&&p.out=="a\nz\n","explicit exec pipeline lost argv or stream");
+    auto provider="provide "+quote(path_text(helper));
+    run("data bind -held ("+provider+")");
+    auto held=run("held");require(shell.seed().is_name(held)&&run("held")==held,"structured result lost retained identity");
+    require(shell.seed().is_number(run("data get held \"large\""))&&shell.seed().print(run("data get held \"large\""))=="9223372036854775807","structured integer lost precision or type");
+    require(shell.seed().is_unit(run("data get held \"null\""))&&shell.seed().is_literal(run("data get held \"empty\"")),"Unit collapsed to empty text");
+    require(shell.seed().print(run("if (data get held \"flag\") \"yes\" \"no\""))=="\"no\"","structured Boolean lost truth semantics");
+    require(shell.seed().print(run("data at (data get held \"items\") 0"))=="\"日本\"","structured list lost Unicode");
+    require(shell.seed().print(run("data get (data get held \"source\") \"snapshot\""))=="\"neutral-fixture\"",
+            "single-field record lost source context");
+    auto printed=shell.seed().print(held);
+    auto restored=shell.seed().read(printed);
+    shell.seed().bind(shell.seed().intern("restored"),restored);
+    require(shell.seed().print(run("data json restored"))==shell.seed().print(run("data json held")),
+            "structured record/list representation did not survive print/read");
+    require(shell.seed().is_name(run(provider+" -semantic"))&&shell.seed().is_literal(run(provider+" \"semantic\"")),"provider flattened Names to text");
+    require(shell.seed().is_unit(run(provider+" ()")),"provider lost Unit");
+    require(!shell.execute("hirari_test_program emit held"),"structured result silently flattened to argv");
+    require(ProcessHost::unpack(shell.seed(),run("exec \"hirari_test_program\" emit (data json held)"),p)&&p.out.find("9223372036854775807")!=std::string::npos,"explicit projection failed");
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit -c -3 3.14"),p)&&p.out=="-c\n-3\n3.14\n", "Name flag or physical literal argv changed");
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program fail || hirari_test_program emit \"recovered\""),p)&&p.status==0&&p.out=="recovered\n", "process OR did not recover failure");
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program fail && missing_neutral_program"),p)&&p.status==7, "process AND demanded skipped branch");
+    Fixtures routing;
+    auto output=routing.root/text_path("routed 日本.bin");auto destination=quote(path_text(output));
+    run("hirari_test_program emit \"first\" > "+destination);
+    run("hirari_test_program emit \"last\" >> "+destination);
+    {std::ifstream file(output,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(file)),{});require(bytes=="first\nlast\n", "native redirection or append corrupted bytes");}
+    run("hirari_test_program bulk > "+destination);
+    require(std::filesystem::file_size(output)==20*1024*1024, "native redirection buffered into capture budget");
+    run("held > "+destination);
+    run("data bind -routed (data read "+destination+")");
+    require(shell.seed().print(run("data json routed"))==shell.seed().print(run("data json held")), "structured file sink flattened data");
+    run("\"a\" > "+destination);run("\"b\" >> "+destination);
+    {std::ifstream file(output,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(file)),{});require(bytes=="ab", "literal redirection inserted formatting");}
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program delayed | hirari_test_program observe"),p)&&p.status==0&&p.out.starts_with("LIVE\n"),"pipe execution is not live");
     for (auto source : {"hirari_test_program observe (hirari_test_program delayed)",
-                        "hirari_test_program observe(hirari_test_program delayed)"})
-        require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.out.starts_with("LIVE\n"),"application composition buffered its producer");
+                        "hirari_test_program observe(hirari_test_program delayed)",
+                        "hirari_test_program observe (hirari_test_program delayed)?",
+                        "(hirari_test_program delayed)? | hirari_test_program observe"})
+        require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.status==0&&p.out.starts_with("LIVE\n"),"application composition buffered its producer");
     for (auto source : {"hirari_test_program emit \"one\" | hirari_test_program relay",
                         "hirari_test_program relay (hirari_test_program emit \"one\")",
                         "hirari_test_program relay(hirari_test_program emit \"one\")"})
         require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.out=="one\n","composition duplicated or lost process output");
-    require(!shell.execute("hirari_test_program () emit \"should not run\""),"foreign capture was silently treated as application");
-    require(!shell.execute("\"should not run\" : hirari_test_program"),"capture mirror was silently treated as application");
+    require(shell.seed().is_abstraction(run("hirari_test_program () emit \"should not run\"")),"native binder was executed instead of abstracted");
+    require(shell.seed().is_abstraction(run("\"should not run\" : hirari_test_program")),"colon abstraction was executed instead of retained");
+    run("emit-value := value() (hirari_test_program emit value)");
+    require(ProcessHost::unpack(shell.seed(),run("emit-value \"日本\""),p)&&p.status==0&&p.out=="日本\n",
+            "abstraction did not compose a native executable");
+    run("observe-input := input() (hirari_test_program observe input)");
+    for(auto spelling:{"observe-input (hirari_test_program delayed)",
+                       "hirari_test_program delayed | observe-input",
+                       "hirari_test_program delayed | (input() (hirari_test_program observe input))"})
+        require(ProcessHost::unpack(shell.seed(),run(spelling),p)&&p.status==0&&p.out.starts_with("LIVE\n"),
+                "substitution buffered a live process producer");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit ()"),p)&&p.out=="\n","Unit argv was silently discarded");
     Fixtures fixtures;
     auto script=fixtures.root/"cli Ω file.seed";write_file(script,"greeting := \"CLI_READY\"\ngreeting\n");
@@ -230,7 +297,7 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     write_file(script,"#[Multiline (\n\" ignored #[nested] comment]\n# another ( comment\ngreeting := \"#[literal]\"\ngreeting\n");
     require(shell.execute_file(script)&&shell.seed().print(run("greeting"))=="\"#[literal]\"","script comment continuation or literal failed");
     write_file(script,"# line 1\n#[ unfinished\n");
-    require(!shell.execute_file(script)&&host.err.find(":2: incomplete Seed expression")!=std::string::npos,"comment EOF line diagnostic missing");
+    require(!shell.execute_file(script)&&host.err.find(":3: incomplete Seed expression")!=std::string::npos,"comment EOF line diagnostic missing");
     write_file(script,"\"incomplete\n");
     require(ProcessHost::unpack(shell.seed(),run("hirari --file "+quote(path_text(script))),p)&&p.status!=0&&p.err.find("incomplete Seed expression")!=std::string::npos,"CLI --file error status/diagnostic missing");
     auto world=fixtures.world("Child env","hirari_test_program environment\n");require(shell.execute("world open "+quote(path_text(world))),"child env world failed");require(host.out.find(path_text(std::filesystem::canonical(world)))!=std::string::npos,"child process did not inherit world env");
@@ -246,28 +313,31 @@ void shell_programs(const std::filesystem::path& helper) {
     auto run=[&](const std::string& source){auto p=shell.execute(source);if(!p)throw std::runtime_error(host.err);return p;};
     auto& r=shell.seed();
     write_file(fixture.root/"identity.seed", "arg 0\n# trailing comment\n#[nested #[ comment] still a comment]\n\n");
-    require(r.print(run("identity :semantic-name"))==":semantic-name", "Seed command lost Name identity");
-    require(r.print(run(":semantic-name | identity"))==":semantic-name", "Seed command flow/application mismatch");
+    require(r.print(run("identity -semantic-name"))=="-semantic-name", "Seed command lost Name identity");
+    require(r.print(run("-semantic-name | identity"))=="-semantic-name", "Seed command flow/application mismatch");
     require(r.print(run("identity \"space Ω\""))=="\"space Ω\"", "Seed command Unicode/literal arguments failed");
     write_file(fixture.root/"identity.seed", "\"EDITED\"\n");
     require(r.print(run("identity \"ignored\""))=="\"EDITED\"", "Seed command cached stale source");
     require(r.print(run("identity.seed \"ignored\""))=="\"EDITED\"", "explicit Seed filename was treated as a native executable");
     write_file(fixture.root/"all.seed", "args\n");
-    auto all=run("all :foo \"foo\" ()"); require(r.is_name(all), "script args must preserve product as a Name");
+    auto all=run("all -foo \"foo\" ()"); require(r.is_name(all), "script args must preserve product as a Name");
     auto all_terms=r.terms(r.as_node(r.as_name(all)->target));
     require(all_terms.size()==3 && r.is_name(all_terms[0]) && r.is_literal(all_terms[1]) && r.is_unit(all_terms[2]), "script arguments lost structure");
     run("local := \"caller\""); auto cell=r.find_cell(r.intern("local")); auto revision=cell->revision;
     write_file(fixture.root/"scope.seed", "local := \"callee\"\nnew-local := \"temporary\"\nlocal\n");
     require(r.print(run("scope"))=="\"callee\"", "Seed command result not returned");
+    require(r.print(run("scope?"))=="\"callee\"", "bare attached script did not invoke its provider");
+    host.out.clear();
+    require(run("? scope?") && host.out.find("retained program form")!=std::string::npos && r.print(run("local"))=="\"caller\"", "help invoked an attached producer");
     require(r.print(run("local"))=="\"caller\"" && cell->revision==revision && !r.binding(r.intern("new-local")), "call scope leaked bindings or replaced cells");
     run("source "+quote(path_text(fixture.root/"scope.seed")));
     require(r.print(run("local"))=="\"callee\"", "source did not export bindings");
     auto library=fixture.root/text_path("library Ω");std::filesystem::create_directories(library);
     write_file(library/"outer.seed", "source \"inner.seed\"\narg 0\n");
     write_file(library/"inner.seed", "args\n");
-    require(r.print(run("run "+quote(path_text(library/"outer.seed"))+" :outer"))==":outer", "nested source did not restore argument frame or resolve file relative include");
+    require(r.print(run("run "+quote(path_text(library/"outer.seed"))+" -outer"))=="-outer", "nested source did not restore argument frame or resolve file relative include");
     write_file(library/"bad.seed", "local := \"bad\"\nmissing_neutral_command \"arg\"\n");
-    require(!shell.execute("run "+quote(path_text(library/"bad.seed"))) && host.err.find("bad.seed:2:")!=std::string::npos, "nested script line diagnostic missing");
+    require(!shell.execute("run "+quote(path_text(library/"bad.seed"))) && host.err.find("bad.seed:3:")!=std::string::npos, "nested script line diagnostic missing");
     require(r.print(run("local"))=="\"callee\"", "failed script leaked binding changes");
     require(!shell.execute("arg 0"), "script arguments escaped call frame");
     write_file(library/"missing-arg.seed", "arg 9\n");
@@ -282,8 +352,8 @@ void shell_programs(const std::filesystem::path& helper) {
     require(!shell.execute("run "+quote(path_text(library/"failure.seed"))) && host.out.find("UNREACHABLE")==std::string::npos, "tool failure did not stop the calling Seed program");
     write_file(library/"cli.seed", "arg 0\n");
     require(ProcessHost::unpack(r,run("hirari --file "+quote(path_text(library/"cli.seed"))+" \"CLI Ω ARG\""),process) && process.out=="\"CLI Ω ARG\"\n", "CLI script arguments failed");
-    write_file(library/"object.seed", "unity bind :temporary (unity new (unity type \"UnityEngine.GameObject\") (arg 0))\ntemporary\n");
-    run("unity bind :kept (run "+quote(path_text(library/"object.seed"))+" \"SURVIVING_OBJECT\")");
+    write_file(library/"object.seed", "unity bind -temporary (unity new (unity type \"UnityEngine.GameObject\") (arg 0))\ntemporary\n");
+    run("unity bind -kept (run "+quote(path_text(library/"object.seed"))+" \"SURVIVING_OBJECT\")");
     require(r.print(run("unity get kept \"name\""))=="\"SURVIVING_OBJECT\"", "script returned handle lost identity after call scope ended");
     require(!r.binding(r.intern("temporary")), "script local foreign binding escaped");
     shell.unity().client().disconnect();server.stop();server.check();
@@ -294,10 +364,13 @@ void path_priority(const std::filesystem::path& helper) {
     auto preferred=fixture.root/text_path("preferred tools 日本");
     std::filesystem::create_directories(preferred);
     std::filesystem::copy_file(helper,preferred/L"sort.exe");
+    std::filesystem::create_directory(preferred/L"hirari_test_program");
     Environment path(L"PATH",preferred.wstring()+L";"+helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");
     MemoryHost host;Shell shell(host);ProcessResult result;
     auto value=shell.execute("sort emit \"PATH_FIRST\"");
     require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="PATH_FIRST\n","PATH priority lost to Windows system sort");
+    value=shell.execute("hirari_test_program emit \"DIRECTORY_SKIPPED\"");
+    require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="DIRECTORY_SKIPPED\n","PATH directory masked a native executable");
     value=shell.execute("hirari --eval "+quote("hirari_test_program emit \"RAW_BYTES\""));
     require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="RAW_BYTES\n","CLI translated child output bytes");
 }

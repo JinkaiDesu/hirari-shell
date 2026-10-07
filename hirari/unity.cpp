@@ -43,7 +43,7 @@ std::string UnityProgram::text(seed::Ptr p) {
 }
 std::vector<seed::Ptr> UnityProgram::list(seed::Ptr p) {
     p=runtime_.reduce(p);
-    if(!runtime_.is_name(p)||foreign(p))throw std::runtime_error("Unity list requires a reified product :(...) or :()");
+    if(!runtime_.is_name(p)||foreign(p))throw std::runtime_error("Unity list requires a reified product -(...) or -()");
     p=runtime_.as_name(p)->target;
     if(runtime_.is_unit(p))return {};
     if(runtime_.is_relation(p))return runtime_.terms(runtime_.as_node(p));
@@ -67,8 +67,8 @@ wire::Value UnityProgram::value(seed::Ptr p,bool batch) {
         if(symbol(runtime_,target,"false"))return V::boolean(false);
         throw std::runtime_error("Seed Name cannot be sent as Unity text or a forged reference");
     }
-    if(runtime_.is_symbol(p)) {
-        const auto& s=runtime_.as_symbol(p)->text;
+    if(runtime_.is_number(p)) {
+        const auto& s=runtime_.as_number(p)->spelling;
         if(s.find_first_of(".eE")!=std::string::npos)return V::f64(number<double>(s));
         auto n=number<std::int64_t>(s);
         if(n>=std::numeric_limits<std::int32_t>::min()&&n<=std::numeric_limits<std::int32_t>::max())return V::i32(static_cast<std::int32_t>(n));
@@ -160,7 +160,7 @@ seed::Ptr UnityProgram::run(seed::Node* relation) {
     }
     if(op=="bind") {
         if(a.size()!=4||!runtime_.is_name(a[2])||!runtime_.is_symbol(runtime_.as_name(a[2])->target))
-            throw std::runtime_error("usage: unity bind :symbol (unity operation ...)");
+            throw std::runtime_error("usage: unity bind -symbol (unity operation ...)");
         // Explicit host binding of an evaluated capability value. Native ':=' / inverse '='
         // deliberately keeps its existing lazy RHS representation.
         auto identity=runtime_.reduce(a[3]);
@@ -170,12 +170,12 @@ seed::Ptr UnityProgram::run(seed::Node* relation) {
     if(op=="at") {
         if(a.size()!=4)throw std::runtime_error("usage: unity at result index");
         auto entries=list(a[2]);auto p=runtime_.reduce(a[3]);
-        std::string s=runtime_.is_symbol(p)?runtime_.as_symbol(p)->text:text(p);
+        std::string s=runtime_.is_number(p)?runtime_.as_number(p)->spelling:text(p);
         auto n=number<std::size_t>(s);if(n>=entries.size())throw std::runtime_error("Unity result index out of range");return entries[n];
     }
     if(op=="i32"||op=="i64"||op=="f32"||op=="f64"||op=="batch-ref"||op=="bytes"||op=="string") {
         if(a.size()!=3)throw std::runtime_error("unity primitive helper takes one argument");
-        auto p=runtime_.reduce(a[2]);std::string s=runtime_.is_symbol(p)?runtime_.as_symbol(p)->text:text(p);
+        auto p=runtime_.reduce(a[2]);std::string s=runtime_.is_number(p)?runtime_.as_number(p)->spelling:text(p);
         if(op=="string")return runtime_.arena().make_literal(text(a[2]));
         if(op=="i32")return box(V::i32(number<std::int32_t>(s)));
         if(op=="i64")return box(V::i64(number<std::int64_t>(s)));
@@ -212,7 +212,7 @@ seed::Ptr UnityProgram::run(seed::Node* relation) {
         }
     }
     if(op=="batch") {
-        if(a.size()!=3)throw std::runtime_error("usage: unity batch :((operation ...) (operation ...))");
+        if(a.size()!=3)throw std::runtime_error("usage: unity batch -((operation ...) (operation ...))");
         wire::Message batch{M::Batch,0,{}};std::vector<wire::Message> operations;
         for(auto p:list(a[2])) {
             if(!runtime_.is_relation(p))throw std::runtime_error("batch operation must be grouped");

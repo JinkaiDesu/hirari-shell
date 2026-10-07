@@ -20,23 +20,7 @@ namespace hirari {
 namespace {
 struct OnExit { std::function<void()> action; ~OnExit() { action(); } };
 bool source_has_form(std::string_view source) {
-    std::size_t i = 0;
-    while (i < source.size()) {
-        if (std::isspace(static_cast<unsigned char>(source[i]))) { ++i; continue; }
-        if (source[i] != '#') return true;
-        if (i + 1 < source.size() && source[i + 1] == '[') {
-            i += 2;
-            unsigned depth = 1;
-            while (i < source.size() && depth) {
-                if (source[i] == '#' && i + 1 < source.size() && source[i + 1] == '[') { ++depth; i += 2; }
-                else if (source[i] == ']') { --depth; ++i; }
-                else ++i;
-            }
-        } else {
-            while (i < source.size() && source[i] != '\n') ++i;
-        }
-    }
-    return false;
+    return seed::Reader::source_has_form(source);
 }
 std::string shell_environment(const wchar_t* key) {
 #ifdef _WIN32
@@ -74,7 +58,7 @@ Shell::Shell(
       processes_(
         seed_,
         host_
-    ), unity_(seed_, host_) {
+    ), unity_(seed_, host_), values_(seed_,processes_,host_,[this](auto p){return unity_.foreign(p)!=nullptr;}) {
     seed_.set_resolver(
         &Shell::resolve,
         this
@@ -91,7 +75,7 @@ Shell::Shell(
     seed_.define("help", &Shell::help, this);
     seed_.define("?", &Shell::help, this);
     seed_.define("vocab", &Shell::vocabulary, this);
-    processes_.opaque_values([this](seed::Ptr value) { return unity_.foreign(value) != nullptr; });
+    processes_.opaque_values([this](seed::Ptr value) { return unity_.foreign(value) != nullptr || values_.structured(value); });
     processes_.stream_resolver([this](seed::Symbol* symbol) {
         auto path=find_script(symbol->text);if(path.empty())return ProcessHost::StreamProgram{};
 #ifdef _WIN32
@@ -196,7 +180,7 @@ seed::Ptr Shell::script_argument(seed::Runtime& r, seed::Node* relation, seed::P
     if (shell.script_frames_.empty()) throw std::runtime_error("arg/args require an active Seed program");
     const auto& arguments = shell.script_frames_.back().arguments;
     if(r.as_symbol(terms[0])->text=="argc"){
-        if(terms.size()!=1)throw std::runtime_error("argc takes no arguments");return r.intern(std::to_string(arguments.size()));
+        if(terms.size()!=1)throw std::runtime_error("argc takes no arguments");return r.arena().make_number(std::to_string(arguments.size()));
     }
     if(r.as_symbol(terms[0])->text=="script-directory"){
         if(terms.size()!=1)throw std::runtime_error("script-directory takes no arguments");
@@ -208,8 +192,8 @@ seed::Ptr Shell::script_argument(seed::Runtime& r, seed::Node* relation, seed::P
     }
     if (terms.size() != 2) throw std::runtime_error("usage: arg INDEX (zero based)");
     auto index_form = r.reduce(terms[1]);
-    if (!r.is_symbol(index_form)) throw std::runtime_error("arg INDEX requires a non-negative integer");
-    auto text = r.as_symbol(index_form)->text;
+    if (!r.arena().is(index_form, seed::HostKind::Integer)) throw std::runtime_error("arg INDEX requires a non-negative integer");
+    auto text = r.as_number(index_form)->spelling;
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
         throw std::runtime_error("arg INDEX requires a non-negative integer");
     auto index = std::stoull(text);
@@ -404,16 +388,12 @@ bool Shell::input(
         return true;
     }
 
-    if (!pending_.empty()) {
-        pending_.push_back(
-            '\n'
-        );
-    }
-
     pending_.append(
         line.data(),
         line.size()
     );
+    // Every committed prompt line has a physical ending, just like file input.
+    pending_.push_back('\n');
 
     if (
         !source_complete(
@@ -505,7 +485,7 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
         ~ForegroundGuard() { processes.end_foreground(); }
     } guard{processes_};
     seed::Ptr result = seed_.reduce(form);
-    if (result == form && seed_.is_relation(form)) {
+    if (result == form && seed_.is_relation(form) && !seed_.is_abstraction(form)) {
         auto terms = seed_.terms(seed_.as_node(form));
         if (!terms.empty() && seed_.is_symbol(terms.front()) &&
             !seed_.registry().find(seed_.as_symbol(terms.front())) &&
@@ -554,13 +534,14 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
         }
     }};
     seed_.bind(seed_.intern("args"),seed_.arena().make_name(seed_.product(script_frames_.back().arguments)));
-    seed_.bind(seed_.intern("argc"),seed_.intern(std::to_string(script_frames_.back().arguments.size())));
+    seed_.bind(seed_.intern("argc"),seed_.arena().make_number(std::to_string(script_frames_.back().arguments.size())));
     seed_.bind(seed_.intern("script-directory"),seed_.arena().make_literal(path_text(script_frames_.back().path.parent_path())));
     std::istringstream lines(source);
     std::string line, pending;
     std::size_t number = 0, start = 1;
     execution_status_ = 0;
     seed::Ptr result = seed_.arena().unit();
+    bool first_form = true, previous_docstring = false;
     while (std::getline(lines, line)) {
         ++number;
         if (pending.empty()) start = number;
@@ -570,8 +551,11 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
         if (!source_has_form(pending)) { pending.clear(); continue; }
         try {
             if (host_.interrupted()) throw std::runtime_error("Seed program interrupted");
-            present(result);
+            if (!previous_docstring) present(result);
+            auto parsed = first_form ? seed_.read(pending) : nullptr;
             result = evaluate(pending, false);
+            previous_docstring = first_form && seed_.is_literal(parsed);
+            first_form = false;
             if (processes_.interactive()) { wait_foreground(); execution_status_ = processes_.last_status(); result = seed_.arena().unit(); }
             if (execution_status_ != 0) {
                 present(result);

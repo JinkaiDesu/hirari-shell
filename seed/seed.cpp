@@ -2,17 +2,43 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
 namespace seed {
 
+#ifdef SEED_PROFILE
+#define SEED_COUNT(runtime, member) (++(runtime).arena().profile().member)
+#else
+#define SEED_COUNT(runtime, member) ((void)0)
+#endif
+
 namespace {
 
-// Both the reader and continuation scanner use the same comment rules.
-bool skip_trivia(std::string_view source, std::size_t& pos) {
+enum class TriviaStatus { Complete, OpenComment, OpenContinuation };
+
+// Only a backslash touching a physical line ending is layout. A final
+// backslash is pending input; ordinary backslashes elsewhere remain symbols.
+std::size_t continuation_width(std::string_view source, std::size_t pos) {
+    if (pos >= source.size() || source[pos] != '\\') return 0;
+    if (pos + 1 == source.size()) return 1;
+    if (source[pos + 1] == '\n') return 2;
+    if (source[pos + 1] == '\r' && pos + 2 < source.size() && source[pos + 2] == '\n') return 3;
+    return 0;
+}
+
+// The reader, continuation prompt and script form scanner share layout rules.
+TriviaStatus skip_trivia(std::string_view source, std::size_t& pos) {
     while (pos < source.size()) {
         if (std::isspace(static_cast<unsigned char>(source[pos]))) { ++pos; continue; }
+        if (auto width = continuation_width(source, pos)) {
+            pos += width;
+            while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t')) ++pos;
+            if (pos == source.size()) return TriviaStatus::OpenContinuation;
+            continue;
+        }
         if (source[pos] != '#') break;
         if (pos + 1 == source.size() || source[pos + 1] != '[') {
             while (pos < source.size() && source[pos] != '\n') ++pos;
@@ -25,16 +51,30 @@ bool skip_trivia(std::string_view source, std::size_t& pos) {
                 ++depth; pos += 2;
             } else if (source[pos++] == ']') --depth;
         }
-        if (depth) return false;
+        if (depth) return TriviaStatus::OpenComment;
     }
-    return true;
+    return TriviaStatus::Complete;
 }
 
 std::string name_spelling(Symbol* symbol) {
-    // Attached ':=' now belongs to binding syntax, so quote operator identities
-    // structurally rather than printing a different value on the next read.
-    if (symbol->text == "=" || symbol->text == ":=") return ":(" + symbol->text + ")";
-    return ":" + symbol->text;
+    for (auto pair : {std::pair{"<", "lt"}, {"<=", "le"}, {"|", "pipe"},
+                      {"=", "bind"}, {"&&", "and"}, {"||", "or"}})
+        if (symbol->text == pair.first) return "-" + std::string(pair.second);
+    // Explicit grouping preserves a raw identity that happens to spell an
+    // operator alias, including provider field names and ordinary bindings.
+    for (auto spelling : {"lt", "le", "pipe", "bind", "and", "or"})
+        if (symbol->text == spelling) return "-(" + symbol->text + ")";
+    if (!symbol->text.empty() && (std::isalpha(static_cast<unsigned char>(symbol->text[0])) ||
+        static_cast<unsigned char>(symbol->text[0]) >= 128 || symbol->text[0] == '_'))
+        return "-" + symbol->text;
+    return "-(" + symbol->text + ")";
+}
+
+Symbol* named_operation(Runtime& runtime, std::string_view spelling) {
+    for (auto pair : {std::pair{"lt", "<"}, {"le", "<="}, {"pipe", "|"},
+                      {"bind", "="}, {"and", "&&"}, {"or", "||"}})
+        if (spelling == pair.first) return runtime.intern(pair.second);
+    return runtime.intern(spelling);
 }
 
 // =============================================================================
@@ -42,18 +82,29 @@ std::string name_spelling(Symbol* symbol) {
 // =============================================================================
 
 bool is_symbol_text(
-    Runtime& runtime,
+    const Runtime& runtime,
     Ptr form,
     std::string_view text
 ) {
     return
         runtime.is_symbol(form) &&
-        runtime.as_symbol(form)->text ==
+        static_cast<Symbol*>(form)->text ==
             text;
 }
 
+bool has_orientation(const Runtime& runtime, const std::vector<Ptr>& forms) {
+    for (Ptr form : forms) {
+        if (!runtime.is_symbol(form)) continue;
+        const auto& text = static_cast<Symbol*>(form)->text;
+        if (text == ":=" || text == "=" || text == "&&" || text == "||" ||
+            text == ">" || text == ">>" || text == "<" || text == "<=" ||
+            text == "|" || text == ":") return true;
+    }
+    return false;
+}
+
 Symbol* symbol_from_identity(
-    Runtime& runtime,
+    const Runtime& runtime,
     Ptr form
 ) {
     if (runtime.is_symbol(form)) {
@@ -80,22 +131,126 @@ Symbol* symbol_from_identity(
     return nullptr;
 }
 
+Ptr binder_identity(const Runtime& runtime, Ptr form) {
+    if (runtime.is_wildcard(form)) return form;
+    return symbol_from_identity(runtime, form);
+}
+
+// Borrow a range only while examining it. Nodes remain the semantic structure;
+// no persistent descriptor or evaluated-result cache can outlive host mutations.
+struct RelationSlice {
+    Node* begin = nullptr;
+    Node* end = nullptr;
+};
+
+struct AbstractionView {
+    Ptr binder = nullptr;
+    RelationSlice body;
+    bool canonical = false;
+};
+
+Node* next_term(Node* node) {
+    return static_cast<Node*>(node->ref);
+}
+
+bool abstraction_view(const Runtime& runtime, RelationSlice slice, AbstractionView& view) {
+    SEED_COUNT(runtime, abstraction_checks);
+    auto first = slice.begin;
+    if (first == slice.end) return false;
+    auto second = next_term(first);
+    if (second == slice.end) return false;
+    auto third = next_term(second);
+    if (third == slice.end) return false;
+    if (runtime.is_unit(second->head)) {
+        view = {binder_identity(runtime, first->head), {third, slice.end}, true};
+        return view.binder != nullptr;
+    }
+    // Binding owns its RHS; otherwise the final colon is the outermost binder.
+    Node* previous = nullptr;
+    Node* last = nullptr;
+    for (auto node = first; node != slice.end; node = next_term(node)) {
+        if (runtime.is_symbol(node->head)) {
+            const auto& text = static_cast<Symbol*>(node->head)->text;
+            if (text == ":=" || text == "=") return false;
+        }
+        previous = last;
+        last = node;
+    }
+    if (!is_symbol_text(runtime, previous->head, ":")) return false;
+    view = {binder_identity(runtime, last->head), {first, previous}, false};
+    return view.binder != nullptr;
+}
+
+Ptr slice_product(Runtime& runtime, RelationSlice slice) {
+    if (slice.begin == slice.end) return runtime.arena().unit();
+    if (next_term(slice.begin) == slice.end) return slice.begin->head;
+    // Preserve the independently owned product that extraction used to return.
+    SEED_COUNT(runtime, term_walks);
+    std::vector<Ptr> forms;
+    for (auto node = slice.begin; node != slice.end; node = next_term(node)) {
+        SEED_COUNT(runtime, terms_copied);
+        forms.push_back(node->head);
+    }
+    return runtime.product(std::move(forms));
+}
+
+struct Substitution {
+    Ptr value = nullptr;
+    bool changed = false;
+};
+
+Substitution substitute_product(Runtime&, RelationSlice, Ptr, Ptr);
+
+Substitution substitute_body(Runtime& runtime, RelationSlice slice, Ptr binder, Ptr replacement) {
+    if (next_term(slice.begin) == slice.end) {
+        Ptr original = slice.begin->head;
+        Ptr value = runtime.substitute(original, binder, replacement);
+        return {value, value != original};
+    }
+    SEED_COUNT(runtime, substitution_visits);
+    return substitute_product(runtime, slice, binder, replacement);
+}
+
+Substitution substitute_product(Runtime& runtime, RelationSlice slice, Ptr binder, Ptr replacement) {
+    AbstractionView view;
+    if (abstraction_view(runtime, slice, view)) {
+        if (view.binder == binder) return {}; // Same-identity shadowing.
+        auto result = substitute_body(runtime, view.body, binder, replacement);
+        if (!result.changed) return {};
+        // Incoming identities may deliberately be captured by this binder.
+        return {runtime.product({view.binder, runtime.arena().unit(), result.value}), true};
+    }
+    SEED_COUNT(runtime, term_walks);
+    std::vector<Ptr> forms;
+    bool changed = false;
+    for (auto node = slice.begin; node != slice.end; node = next_term(node)) {
+        Ptr value = runtime.substitute(node->head, binder, replacement);
+        changed |= value != node->head;
+        SEED_COUNT(runtime, terms_copied);
+        forms.push_back(value);
+    }
+    // An unchanged range never needs a reconstructed intermediate body.
+    return changed ? Substitution{runtime.arena().make_relation(forms), true} : Substitution{};
+}
+
+Ptr demand_program_form(Runtime& runtime, Ptr form);
+
 // -----------------------------------------------------------------------------
-// ?
+// demand
 // -----------------------------------------------------------------------------
 //
-// ? camera
+// demand camera
 //
 // means:
 //
 // demand/reduce camera.
 //
-// camera ?
+// camera demand
 //
 // is structurally different and is therefore left untouched.
 //
 
-Ptr program_query(
+Ptr program_demand(
     Runtime& runtime,
     Node* relation,
     Ptr
@@ -105,8 +260,7 @@ Ptr program_query(
 
     if (
         terms.empty() ||
-        !(is_symbol_text(runtime, terms.front(), "?") ||
-          is_symbol_text(runtime, terms.front(), "demand"))
+        !is_symbol_text(runtime, terms.front(), "demand")
     ) {
         return relation;
     }
@@ -121,7 +275,7 @@ Ptr program_query(
             std::move(tail)
         );
 
-    return runtime.reduce(
+    return demand_program_form(runtime,
         target
     );
 }
@@ -130,7 +284,7 @@ Ptr program_query(
 // =
 // -----------------------------------------------------------------------------
 //
-// camera := unity :Camera.main  <=>  unity :Camera.main = camera
+// camera := unity -Camera.main  <=>  unity -Camera.main = camera
 //
 // establishes:
 //
@@ -190,11 +344,12 @@ Ptr program_flow(Runtime& runtime, Node* relation, Ptr) {
 Ptr program_apply(Runtime& runtime, Node* relation, Ptr) {
     auto terms=runtime.terms(relation);
     if(terms.empty() || !is_symbol_text(runtime,terms.front(),"apply"))return relation;
-    if(terms.size()!=3)throw std::runtime_error("usage: apply :PROGRAM :(ARGUMENTS ...)");
+    if(terms.size()!=3)throw std::runtime_error("usage: apply -PROGRAM -(ARGUMENTS ...)");
     auto program=runtime.reduce(terms[1]);auto arguments=runtime.reduce(terms[2]);
     if(!runtime.is_name(program) || !runtime.is_name(arguments))throw std::runtime_error("apply requires reified program and argument products");
     auto head=runtime.as_name(program)->target,tail=runtime.as_name(arguments)->target;
-    auto forms=runtime.is_relation(head)?runtime.terms(runtime.as_node(head)):std::vector<Ptr>{head};
+    auto forms=runtime.is_relation(head) && !runtime.is_abstraction(head)
+        ? runtime.terms(runtime.as_node(head)) : std::vector<Ptr>{head};
     if(!runtime.is_unit(tail)) {
         auto values=runtime.is_relation(tail)?runtime.terms(runtime.as_node(tail)):std::vector<Ptr>{tail};
         forms.insert(forms.end(),values.begin(),values.end());
@@ -227,25 +382,9 @@ Ptr program_colon(
     Node* relation,
     Ptr
 ) {
-    auto terms =
-        runtime.terms(relation);
-
-    if (
-        terms.size() != 3 ||
-        !is_symbol_text(
-            runtime,
-            terms[1],
-            ":"
-        )
-    ) {
-        return relation;
-    }
-
-    return runtime.product({
-        terms[2],
-        runtime.arena().unit(),
-        terms[0]
-    });
+    Ptr binder = nullptr, body = nullptr;
+    if (!runtime.abstraction(relation, binder, body)) return relation;
+    return runtime.product({binder, runtime.arena().unit(), body});
 }
 
 // -----------------------------------------------------------------------------
@@ -290,6 +429,8 @@ Ptr program_reference(
         );
 
     if (!symbol) {
+        if (runtime.is_wildcard(terms[1]))
+            throw std::runtime_error("anonymous _ has no binding cell");
         return relation;
     }
 
@@ -349,6 +490,9 @@ Ptr program_head(
         runtime.product(
             std::move(tail)
         );
+
+    if (runtime.is_wildcard(target))
+        throw std::runtime_error("anonymous _ has no binding head");
 
     // Direct Cell.
     if (runtime.is_cell(target)) {
@@ -412,9 +556,24 @@ Ptr program_head(
 // for :element domain body
 //
 // Multi-term branches/bodies are grouped. A reified product is a data domain:
-// for :item :("a" "b") (consumer item)
+// for -item -("a" "b") (consumer item)
 // The iteration binding is restored, including when a body throws.
 Ptr demand_program_form(Runtime& runtime, Ptr form) {
+    if (runtime.is_relation(form)) {
+        auto terms = runtime.terms(runtime.as_node(form));
+        // A named relation stays data during ordinary reduction. Explicit
+        // demand activates its provider, using the ordinary Program ABI.
+        bool callable_head = runtime.is_symbol(terms.front()) &&
+            static_cast<bool>(runtime.resolve_program(runtime.as_symbol(terms.front())));
+        if (!callable_head && terms.size() >= 3 && runtime.is_name(terms[1])) {
+            auto operation = runtime.as_name(terms[1])->target;
+            if (runtime.is_symbol(operation) && runtime.resolve_program(runtime.as_symbol(operation))) {
+                std::vector<Ptr> call{operation, terms[0]};
+                call.insert(call.end(), terms.begin()+2, terms.end());
+                form = runtime.product(std::move(call));
+            }
+        }
+    }
     if (runtime.is_symbol(form) && !runtime.binding(runtime.as_symbol(form))) {
         if (runtime.resolve_program(runtime.as_symbol(form)))
             form = runtime.arena().make_relation({form});
@@ -442,6 +601,73 @@ Ptr program_if(Runtime& runtime, Node* relation, Ptr) {
     if (runtime.truth(decision)) return demand_program_form(runtime, terms[2]);
     if (terms.size() == 4) return demand_program_form(runtime, terms[3]);
     return runtime.arena().unit();
+}
+
+// Equal-precedence, left-to-right short circuit, retaining the selected value.
+// Prefix use (&& A B / || A B) uses the same lazy binary operation.
+Ptr program_boolean(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    auto boolean = [&](Ptr p) {
+        return is_symbol_text(runtime, p, "&&") || is_symbol_text(runtime, p, "||");
+    };
+    auto choose = [&](Ptr operation, Ptr left, Ptr right) {
+        Ptr value = demand_program_form(runtime, left);
+        Ptr decision = runtime.reduce(runtime.product({runtime.intern("truth"), value}));
+        bool success = runtime.truth(decision);
+        bool use_right = is_symbol_text(runtime, operation, "&&") ? success : !success;
+        return use_right ? demand_program_form(runtime, right) : value;
+    };
+    if (boolean(terms.front())) {
+        if (terms.size() != 3) throw std::runtime_error("&& / || expect two grouped operands");
+        return choose(terms[0], terms[1], terms[2]);
+    }
+    // Splitting on the last operator gives a left-associated structure.
+    for (std::size_t i = terms.size(); i-- > 0;) {
+        if (!boolean(terms[i])) continue;
+        if (i == 0 || i + 1 == terms.size())
+            throw std::runtime_error("&& / || require both operands");
+        return choose(terms[i],
+            runtime.product(std::vector<Ptr>(terms.begin(), terms.begin() + i)),
+            runtime.product(std::vector<Ptr>(terms.begin() + i + 1, terms.end())));
+    }
+    return relation;
+}
+
+Ptr program_compare(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    auto comparison = [&](Ptr p) {
+        return is_symbol_text(runtime, p, "<") || is_symbol_text(runtime, p, "<=");
+    };
+    if (!comparison(terms.front()) && (terms.size() < 2 || !comparison(terms[1]))) return relation;
+    if (terms.size() != 3) throw std::runtime_error("comparison expects two operands; group compound operands");
+    Ptr op = comparison(terms.front()) ? terms[0] : terms[1];
+    Ptr left = demand_program_form(runtime, comparison(terms.front()) ? terms[1] : terms[0]);
+    Ptr right = demand_program_form(runtime, terms[2]);
+    int order;
+    if (runtime.is_number(left) && runtime.is_number(right)) {
+        auto a = runtime.as_number(left), b = runtime.as_number(right);
+        bool ai = runtime.arena().is(left, HostKind::Integer), bi = runtime.arena().is(right, HostKind::Integer);
+        if (ai && bi) order = (a->integer > b->integer) - (a->integer < b->integer);
+        else if (!ai && !bi) order = (a->real > b->real) - (a->real < b->real);
+        else {
+            auto integer = ai ? a->integer : b->integer;
+            auto real = ai ? b->real : a->real;
+            // Preserve exact int64 ordering at the double precision boundary.
+            int mixed;
+            if (real >= 9223372036854775808.0) mixed = -1;
+            else if (real < -9223372036854775808.0) mixed = 1;
+            else {
+                auto whole = static_cast<std::int64_t>(real);
+                mixed = (integer > whole) - (integer < whole);
+                if (!mixed) mixed = (static_cast<double>(whole) > real) - (static_cast<double>(whole) < real);
+            }
+            order = ai ? mixed : -mixed;
+        }
+    } else if (runtime.is_literal(left) && runtime.is_literal(right)) {
+        order = runtime.as_literal(left)->bytes.compare(runtime.as_literal(right)->bytes);
+    } else throw std::runtime_error("ordering requires two numbers or two strings; domain ordering belongs to its provider");
+    bool result = order < 0 || (is_symbol_text(runtime, op, "<=") && order == 0);
+    return runtime.arena().make_name(runtime.intern(result ? "true" : "false"));
 }
 
 Ptr program_for(Runtime& runtime, Node* relation, Ptr) {
@@ -510,6 +736,9 @@ Arena::Arena() {
 Node* Arena::make_node(
     Ptr head
 ) {
+#ifdef SEED_PROFILE
+    ++profile_.nodes;
+#endif
     auto node =
         std::make_unique<Node>();
 
@@ -533,6 +762,9 @@ Node* Arena::make_node(
 Node* Arena::make_relation(
     const std::vector<Ptr>& forms
 ) {
+#ifdef SEED_PROFILE
+    ++profile_.relations;
+#endif
     if (forms.empty()) {
         return unit_;
     }
@@ -653,7 +885,7 @@ Literal* Arena::make_literal(
 Cell* Arena::make_cell(
     Symbol* symbol
 ) {
-    if (!symbol) {
+    if (!symbol || symbol->text == "_") {
         throw std::invalid_argument(
             "cell requires symbol"
         );
@@ -677,6 +909,27 @@ Cell* Arena::make_cell(
         HostKind::Cell
     );
 
+    return raw;
+}
+
+Ptr Arena::make_wildcard() {
+    auto value = make_node();
+    meta_[value] = HostKind::Wildcard;
+    return value;
+}
+
+Ptr Arena::make_number(std::string_view spelling) {
+    auto value = std::make_unique<Number>();
+    value->spelling = spelling;
+    bool real = spelling.find_first_of(".eE") != std::string_view::npos;
+    auto first = spelling.data(), last = first + spelling.size();
+    auto result = real ? std::from_chars(first, last, value->real)
+                       : std::from_chars(first, last, value->integer);
+    if (result.ec != std::errc{} || result.ptr != last || (real && !std::isfinite(value->real)))
+        throw std::runtime_error("invalid or out-of-range numeric literal");
+    Ptr raw = value.get();
+    numbers_.push_back(std::move(value));
+    meta_[raw] = real ? HostKind::Real : HostKind::Integer;
     return raw;
 }
 
@@ -799,25 +1052,38 @@ char Reader::take() {
 }
 
 void Reader::skip_space() {
-    if (!skip_trivia(source_, pos_))
+    auto status = skip_trivia(source_, pos_);
+    if (status == TriviaStatus::OpenComment)
         throw std::runtime_error("unterminated bracket comment");
+    if (status == TriviaStatus::OpenContinuation)
+        throw std::runtime_error("unterminated source continuation");
+}
+
+bool Reader::source_has_form(std::string_view source) {
+    std::size_t pos = 0;
+    return skip_trivia(source, pos) == TriviaStatus::Complete && pos < source.size();
 }
 
 bool Reader::source_complete(std::string_view source) {
     int depth = 0;
     std::size_t pos = 0;
     while (pos < source.size()) {
-        if (!skip_trivia(source, pos)) return false;
+        if (skip_trivia(source, pos) != TriviaStatus::Complete) return false;
         if (pos == source.size()) break;
         char c = source[pos++];
         if (c == '"') {
+            bool triple = pos + 1 < source.size() && source[pos] == '"' && source[pos+1] == '"';
+            if (triple) pos += 2;
             bool closed = false;
             while (pos < source.size()) {
                 c = source[pos++];
                 if (c == '\\') {
                     if (pos == source.size()) return false;
                     ++pos;
-                } else if (c == '"') { closed = true; break; }
+                } else if (c == '"' && (!triple || (pos + 1 < source.size() && source[pos] == '"' && source[pos+1] == '"'))) {
+                    if (triple) pos += 2;
+                    closed = true; break;
+                }
             }
             if (!closed) return false;
         } else if (c == '(') ++depth;
@@ -892,23 +1158,39 @@ Ptr Reader::read_form() {
         );
     }
 
-    if (peek() == '(') {
-        return read_group();
-    }
-
-    if (peek() == ':') {
+    Ptr form;
+    if ((peek() == '@' || peek() == '*') && peek(1) != '\0' &&
+        !std::isspace(static_cast<unsigned char>(peek(1))) && peek(1) != ')' &&
+        peek(1) != '#' && peek(1) != '?' && continuation_width(source_, pos_ + 1) == 0) {
+        auto prefix = std::string(1, take());
+        form = runtime_.product({runtime_.intern(prefix), read_form()});
+    } else if (peek() == '(') {
+        form = read_group();
+    } else if (peek() == '-' && (peek(1) == '(' ||
+        std::isalpha(static_cast<unsigned char>(peek(1))) ||
+        static_cast<unsigned char>(peek(1)) >= 128 || peek(1) == '_')) {
+        bool grouped = peek(1) == '(';
+        take();
+        Ptr target = read_form();
+        if (!grouped && runtime_.is_symbol(target)) target = named_operation(runtime_, runtime_.as_symbol(target)->text);
+        form = runtime_.arena().make_name(target);
+    } else if (peek() == ':') {
         if (peek(1) == '=') {
             take(); take();
-            return runtime_.intern(":=");
-        }
-        return read_colon_form();
+            form = runtime_.intern(":=");
+        } else { take(); form = runtime_.intern(":"); }
+    } else if (peek() == '"') {
+        form = read_literal();
+    } else {
+        form = read_symbol();
     }
-
-    if (peek() == '"') {
-        return read_literal();
+    // Attachment is lexical: a? is a demanded product, a ? is two terms.
+    // Lower into existing Ptr relations; no new evaluator or host payload kind.
+    while (peek() == '?' && !eof()) {
+        take();
+        form = runtime_.arena().make_relation({runtime_.intern("demand"), form});
     }
-
-    return read_symbol();
+    return form;
 }
 
 Ptr Reader::read_group() {
@@ -938,52 +1220,10 @@ Ptr Reader::read_group() {
     return inside;
 }
 
-Ptr Reader::read_colon_form() {
-    take();
-
-    // Detached colon:
-    //
-    //     a : b
-    //
-    // is Symbol(":").
-    if (
-        eof() ||
-        std::isspace(
-            static_cast<unsigned char>(
-                peek()
-            )
-        ) ||
-        peek() == ')' || peek() == '#'
-    ) {
-        return
-            runtime_.arena()
-                .intern(":");
-    }
-
-    // ::
-    //
-    // Name of Symbol(":").
-    if (peek() == ':') {
-        take();
-
-        return
-            runtime_.arena()
-                .make_name(
-                    runtime_.arena()
-                        .intern(":")
-                );
-    }
-
-    // :Form
-    return
-        runtime_.arena()
-            .make_name(
-                read_form()
-            );
-}
-
 Ptr Reader::read_literal() {
     take();
+    bool triple = peek() == '"' && peek(1) == '"';
+    if (triple) { take(); take(); }
 
     std::string bytes;
 
@@ -991,7 +1231,8 @@ Ptr Reader::read_literal() {
         const char c =
             take();
 
-        if (c == '"') {
+        if (c == '"' && (!triple || (peek() == '"' && peek(1) == '"'))) {
+            if (triple) { take(); take(); }
             return
                 runtime_.arena()
                     .make_literal(
@@ -1052,6 +1293,17 @@ Ptr Reader::read_literal() {
 std::string Reader::read_symbol_token() {
     std::string token;
 
+    // || is one identity; | | is two pipe identities. These are delimiters
+    // even without surrounding spaces, as ordinary shell control operators are.
+    if (peek() == '|' || peek() == '>') {
+        token.push_back(take());
+        if (peek() == token[0]) token.push_back(take());
+        return token;
+    }
+    if (peek() == '<') { token.push_back(take()); if (peek() == '=') token.push_back(take()); return token; }
+    if (peek() == '=') { take(); return "="; }
+    if (peek() == '&' && peek(1) == '&') { take(); take(); return "&&"; }
+
     while (!eof()) {
         const char c =
             peek();
@@ -1063,7 +1315,10 @@ std::string Reader::read_symbol_token() {
             c == '(' ||
             c == ')' ||
             c == '"' ||
-            c == ':' || c == '#'
+            c == ':' || c == '#' || c == '|' || c == '<' || c == '>' || c == '=' ||
+            continuation_width(source_, pos_) != 0 ||
+            (c == '&' && peek(1) == '&') ||
+            (c == '?' && !token.empty())
         ) {
             break;
         }
@@ -1086,9 +1341,13 @@ Ptr Reader::read_symbol() {
         );
     }
 
-    return
-        runtime_.arena()
-            .intern(token);
+    if (token == "_") return runtime_.arena().make_wildcard();
+    auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    std::size_t start = token[0] == '-' ? 1 : 0;
+    if (start < token.size() && (digit(token[start]) ||
+        (token[start] == '.' && start + 1 < token.size() && digit(token[start+1]))))
+        return runtime_.arena().make_number(token);
+    return runtime_.arena().intern(token);
 }
 
 // =============================================================================
@@ -1151,6 +1410,12 @@ std::string Printer::native_form(
         case HostKind::Unit:
             return "()";
 
+        case HostKind::Wildcard:
+            return "_";
+        case HostKind::Integer:
+        case HostKind::Real:
+            return static_cast<Number*>(form)->spelling;
+
         case HostKind::Symbol:
             return
                 static_cast<Symbol*>(form)
@@ -1177,10 +1442,10 @@ std::string Printer::native_form(
             if (
                 runtime_.is_unit(target)
             ) {
-                return ":()";
+                return "-()";
             }
 
-            return ":" +
+            return "-" +
                 structural_form(
                     target
                 );
@@ -1191,7 +1456,7 @@ std::string Printer::native_form(
                 static_cast<Cell*>(form);
 
             if (!cell->symbol) {
-                return "@ :()";
+                return "@ -()";
             }
 
             return
@@ -1285,6 +1550,12 @@ std::string Printer::structural_member(
         case HostKind::Unit:
             return "(())";
 
+        case HostKind::Wildcard:
+            return "(_)";
+        case HostKind::Integer:
+        case HostKind::Real:
+            return "(" + static_cast<Number*>(form)->spelling + ")";
+
         case HostKind::Symbol:
             return "(" +
                 static_cast<Symbol*>(form)
@@ -1313,10 +1584,10 @@ std::string Printer::structural_member(
             if (
                 runtime_.is_unit(target)
             ) {
-                return "(:())";
+                return "(-())";
             }
 
-            return "(:" +
+            return "(-" +
                 structural_form(
                     target
                 ) +
@@ -1328,7 +1599,7 @@ std::string Printer::structural_member(
                 static_cast<Cell*>(form);
 
             if (!cell->symbol) {
-                return "((@)(:()))";
+                return "((@)(-()))";
             }
 
             return
@@ -1377,12 +1648,12 @@ std::string Printer::structural_form(
             runtime_.as_cell(form);
 
         if (!cell->symbol) {
-            return "((@)(:()))";
+            return "((@)(-()))";
         }
 
         return
-            "((@)(:" +
-            cell->symbol->text +
+            "((@)(" +
+            name_spelling(cell->symbol) +
             "))";
     }
 
@@ -1471,62 +1742,52 @@ Ptr Reducer::reduce(
 Ptr Reducer::reduce_once(
     Ptr form
 ) {
+    SEED_COUNT(runtime_, reduction_steps);
     if (!form) {
         return nullptr;
     }
 
-    if (
-        runtime_.is_name(form) ||
-        runtime_.is_literal(form) ||
-        runtime_.is_unit(form) ||
-        runtime_.is_cell(form)
-    ) {
+    switch (runtime_.arena().kind(form)) {
+    case HostKind::Node:
+        return reduce_relation(static_cast<Node*>(form));
+    case HostKind::Symbol:
+        if (Ptr current = runtime_.binding(static_cast<Symbol*>(form))) return current;
+        return form;
+    default:
         return form;
     }
-
-    if (
-        runtime_.is_symbol(form)
-    ) {
-        Symbol* symbol =
-            runtime_.as_symbol(
-                form
-            );
-
-        if (
-            Ptr current =
-                runtime_.binding(
-                    symbol
-                )
-        ) {
-            return current;
-        }
-
-        return form;
-    }
-
-    return
-        reduce_relation(
-            runtime_.as_node(
-                form
-            )
-        );
 }
 
 Ptr Reducer::reduce_relation(
     Node* relation
 ) {
+    Ptr binder = nullptr;
+    Ptr body = nullptr;
+    AbstractionView view;
+    if (abstraction_view(runtime_, {relation, nullptr}, view)) {
+        // An abstraction never demands its body or resolves its binder as a
+        // native program. Only normalize the reverse-facing colon spelling.
+        if (!view.canonical)
+            return runtime_.product({view.binder, runtime_.arena().unit(),
+                                     slice_product(runtime_, view.body)});
+        return relation;
+    }
     // Orient the whole relation before any native head can perform effects.
     // In particular, binding and flow must not execute their producer twice.
     auto terms = runtime_.terms(relation);
-    for (auto spelling : {":=", "=", "|", ":"}) {
-        for (Ptr term : terms) {
-            if (!is_symbol_text(runtime_, term, spelling)) continue;
-            Program program = runtime_.registry().find(runtime_.as_symbol(term));
-            if (program) {
-                Ptr result = program.invoke(runtime_, relation, program.context);
-                if (result != relation) return result;
+    // An ordinary application has no orientation Program to consult. If one
+    // exists, retain the full dispatch order and recheck after every callback.
+    if (has_orientation(runtime_, terms)) {
+        for (auto spelling : {":=", "=", "&&", "||", ">", ">>", "<", "<=", "|", ":"}) {
+            for (Ptr term : terms) {
+                if (!is_symbol_text(runtime_, term, spelling)) continue;
+                Program program = runtime_.registry().find(runtime_.as_symbol(term));
+                if (program) {
+                    Ptr result = program.invoke(runtime_, relation, program.context);
+                    if (result != relation) return result;
+                }
+                break;
             }
-            break;
         }
     }
     // Host inspection must see the retained alias before callable expansion.
@@ -1538,12 +1799,36 @@ Ptr Reducer::reduce_relation(
     }
     Ptr expanded = runtime_.application(relation);
     if (expanded != relation) return expanded;
+    if (terms.size() >= 2 && runtime_.is_relation(terms.front())) {
+        Ptr consumer = terms.front();
+        if (runtime_.abstraction(consumer, binder, body)) {
+            // A leading string documents a body with remaining executable
+            // structure. A lone string is still a constant abstraction.
+            if (runtime_.is_relation(body)) {
+                auto first = static_cast<Node*>(body);
+                if (first->ref && runtime_.is_literal(first->head))
+                    body = slice_product(runtime_, {next_term(first), nullptr});
+            }
+            // The argument is substituted as written, not demanded first.
+            Ptr result = runtime_.substitute(body, binder, terms[1]);
+            for (std::size_t i = 2; i < terms.size(); ++i)
+                result = runtime_.compose(result, terms[i]);
+            return result;
+        }
+        Ptr reduced = runtime_.reduce(consumer);
+        if (reduced != consumer) {
+            for (std::size_t i = 1; i < terms.size(); ++i)
+                reduced = runtime_.compose(reduced, terms[i]);
+            return reduced;
+        }
+    }
     // Registered relation Programs get first refusal anywhere in the product.
     // Lazy foreign resolution is restricted to its consumer/head position.
     for (Ptr term : runtime_.terms(relation)) {
         if (!runtime_.is_symbol(term)) continue;
         auto spelling = runtime_.as_symbol(term)->text;
-        if (spelling == ":=" || spelling == "=" || spelling == "|" || spelling == ":") continue;
+        if (spelling == ":=" || spelling == "=" || spelling == "|" || spelling == ":" ||
+            spelling == "&&" || spelling == "||") continue;
         Program program = runtime_.registry().find(runtime_.as_symbol(term));
         if (!program) continue;
         Ptr result = program.invoke(runtime_, relation, program.context);
@@ -1557,7 +1842,9 @@ Ptr Reducer::reduce_relation(
     return relation;
 }
 Ptr Runtime::compose(Ptr consumer, Ptr producer) {
-    auto forms = is_relation(consumer) ? terms(as_node(consumer)) : std::vector<Ptr>{consumer};
+    SEED_COUNT(*this, compositions);
+    auto forms = is_relation(consumer) && !is_abstraction(consumer)
+        ? terms(as_node(consumer)) : std::vector<Ptr>{consumer};
     forms.push_back(producer);
     return product(std::move(forms));
 }
@@ -1592,16 +1879,15 @@ Runtime::Runtime()
 
     define("truth", &program_truth);
     define("apply", &program_apply);
-    define("demand", &program_query);
+    define("demand", &program_demand);
     define("if", &program_if);
+    define("&&", &program_boolean);
+    define("||", &program_boolean);
+    define("<", &program_compare);
+    define("<=", &program_compare);
     define("for", &program_for);
     define(":=", &program_bind);
     define("|", &program_flow);
-
-    define(
-        "?",
-        &program_query
-    );
 
     define(
         "=",
@@ -1679,6 +1965,10 @@ Ptr Runtime::run(
 
 bool Runtime::truth(Ptr value) const {
     if (!value || is_unit(value)) return false;
+    if (is_number(value)) {
+        auto n = as_number(value);
+        return arena_.is(value, HostKind::Integer) ? n->integer != 0 : n->real != 0;
+    }
     if (is_literal(value)) {
         const auto& bytes = as_literal(value)->bytes;
         return !bytes.empty() && bytes != "0" && bytes != "false";
@@ -1757,6 +2047,7 @@ std::string Runtime::structural(
 std::vector<Ptr> Runtime::terms(
     Node* relation
 ) const {
+    SEED_COUNT(*this, term_walks);
     std::vector<Ptr> result;
 
     for (
@@ -1769,6 +2060,7 @@ std::vector<Ptr> Runtime::terms(
                   )
                 : nullptr
     ) {
+        SEED_COUNT(*this, terms_copied);
         result.push_back(
             current->head
         );
@@ -1801,9 +2093,9 @@ Ptr Runtime::product(
 Cell* Runtime::ensure_cell(
     Symbol* symbol
 ) {
-    if (!symbol) {
+    if (!symbol || symbol->text == "_") {
         throw std::invalid_argument(
-            "cannot create cell for null symbol"
+            "anonymous _ has no binding cell"
         );
     }
 
@@ -1867,11 +2159,18 @@ std::vector<Cell> Runtime::capture_bindings() const {
 }
 
 Ptr Runtime::application(Ptr form) {
+    SEED_COUNT(*this, applications);
     if (!is_relation(form)) return form;
-    auto forms = terms(as_node(form));
-    for(auto term:forms)
-        for(auto orientation:{":=","=","|",":"})
-            if(is_symbol_text(*this,term,orientation))return form;
+    if (is_abstraction(form)) return form;
+    auto relation = static_cast<Node*>(form);
+    if (!is_symbol(relation->head)) return form;
+    auto consumer = static_cast<Symbol*>(relation->head);
+    if (registry().find(consumer)) return form;
+    auto candidate = binding(consumer);
+    if (!candidate || (!is_symbol(candidate) && !is_relation(candidate))) return form;
+    // Allocate a flattened invocation only when there is a callable binding.
+    auto forms = terms(relation);
+    if (has_orientation(*this, forms)) return form;
     std::vector<Symbol*> seen;
     bool changed = false;
     while (!forms.empty() && is_symbol(forms.front())) {
@@ -1883,13 +2182,53 @@ Ptr Runtime::application(Ptr form) {
         if (std::find(seen.begin(), seen.end(), symbol) != seen.end() || seen.size() >= 64)
             throw std::runtime_error("cyclic callable binding: " + symbol->text);
         seen.push_back(symbol);
-        auto head = is_relation(retained) ? terms(as_node(retained)) : std::vector<Ptr>{retained};
+        auto head = is_relation(retained) && !is_abstraction(retained)
+            ? terms(as_node(retained)) : std::vector<Ptr>{retained};
         if (head.empty()) break;
         head.insert(head.end(), forms.begin() + 1, forms.end());
         forms = std::move(head);
         changed = true;
     }
     return changed ? product(std::move(forms)) : form;
+}
+
+bool Runtime::is_abstraction(Ptr form) const {
+    if (!is_relation(form)) return false;
+    AbstractionView view;
+    return abstraction_view(*this, {static_cast<Node*>(form), nullptr}, view);
+}
+
+bool Runtime::abstraction(Ptr form, Ptr& binder, Ptr& body) {
+    SEED_COUNT(*this, body_extractions);
+    if (!is_relation(form)) return false;
+    AbstractionView view;
+    if (!abstraction_view(*this, {static_cast<Node*>(form), nullptr}, view)) return false;
+    binder = view.binder;
+    body = slice_product(*this, view.body);
+    return true;
+}
+
+Ptr Runtime::substitute(Ptr body, Ptr binder, Ptr replacement) {
+    SEED_COUNT(*this, substitution_visits);
+    if (is_wildcard(binder)) return body; // Anonymous positions are never holes.
+    if (body == binder) return replacement;
+    if (!is_relation(body)) return body;
+
+    auto result = substitute_product(*this, {static_cast<Node*>(body), nullptr}, binder, replacement);
+    return result.changed ? result.value : body;
+}
+
+bool Runtime::is_wildcard(Ptr p) const {
+    return arena_.is(p, HostKind::Wildcard);
+}
+
+bool Runtime::is_number(Ptr p) const {
+    return arena_.is(p, HostKind::Integer) || arena_.is(p, HostKind::Real);
+}
+
+Number* Runtime::as_number(Ptr p) const {
+    if (!is_number(p)) throw std::invalid_argument("not a numeric literal");
+    return static_cast<Number*>(p);
 }
 
 void Runtime::restore_bindings(const std::vector<Cell>& saved) {

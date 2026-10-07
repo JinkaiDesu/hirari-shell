@@ -6,6 +6,7 @@
 #include "hirari/unity.hpp"
 #include "hirari/world.hpp"
 #include "hirari/vocabulary.hpp"
+#include "hirari/values.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -104,6 +105,7 @@ private:
     ProcessHost processes_;
 
     UnityProgram unity_;
+    Values values_;
     WorldHost worlds_;
     std::unique_ptr<Vocabulary> vocabulary_;
     bool interactive_session_ = false;

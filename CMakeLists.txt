@@ -27,6 +27,7 @@ add_library(hirari_runtime STATIC
     hirari/unity.cpp
     hirari/world.cpp
     hirari/vocabulary.cpp
+    hirari/values.cpp
 )
 
 target_include_directories(hirari_runtime
@@ -96,6 +97,23 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(seed_tests tests/seed_tests.cpp)
     target_link_libraries(seed_tests PRIVATE seed)
+    add_executable(seed_performance tests/seed_performance.cpp)
+    target_link_libraries(seed_performance PRIVATE seed)
+    # Keep diagnostic counters out of the production Seed/Hirari binaries.
+    add_library(seed_profile STATIC seed/seed.cpp)
+    target_include_directories(seed_profile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(seed_profile PUBLIC SEED_PROFILE)
+    add_executable(seed_performance_profile tests/seed_performance.cpp)
+    target_link_libraries(seed_performance_profile PRIVATE seed_profile)
+    if(MSVC)
+        target_compile_options(seed_profile PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(seed_performance PRIVATE /W4 /permissive- /utf-8)
+        target_compile_options(seed_performance_profile PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(seed_profile PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(seed_performance PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(seed_performance_profile PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
     add_test(NAME seed_semantics COMMAND seed_tests)
     if(WIN32)
         add_executable(hirari_test_program tests/test_program.cpp)
@@ -117,8 +135,8 @@ if(BUILD_TESTING)
         set_tests_properties(hirari_shell_completion PROPERTIES TIMEOUT 30)
         set_tests_properties(hirari_integration PROPERTIES TIMEOUT 30)
     endif()
-    add_test(NAME hirari_eval_name COMMAND hirari --eval ":foo")
-    set_tests_properties(hirari_eval_name PROPERTIES PASS_REGULAR_EXPRESSION ":foo")
+    add_test(NAME hirari_eval_name COMMAND hirari --eval "-foo")
+    set_tests_properties(hirari_eval_name PROPERTIES PASS_REGULAR_EXPRESSION "-foo")
     add_test(NAME hirari_eval_failure COMMAND hirari --eval "missing_neutral_program arg")
     set_tests_properties(hirari_eval_failure PROPERTIES WILL_FAIL TRUE)
     add_test(NAME hirari_cli_usage COMMAND hirari --unknown)

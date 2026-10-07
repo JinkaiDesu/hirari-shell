@@ -14,16 +14,23 @@ std::string identity(seed::Runtime& r,seed::Ptr p) {
 }
 const std::map<std::string,std::string> documentation{
     {"help","help [SUBJECT] | SUBJECT help | ? SUBJECT\nInspect definitions, command origins or retained CLR members without executing the subject."},
-    {"?","? SUBJECT\nReflective help. SUBJECT help is the same inspection. Use demand SUBJECT to evaluate."},
-    {"demand","demand SUBJECT\nEvaluate the subject using Seed's reduction rules."},
+    {"?","? SUBJECT\nReflective help. SUBJECT help is the same inspection. Attached form? requests the form's produced answer and does not invoke help."},
+    {"demand","demand SUBJECT | SUBJECT?\nEvaluate the subject through its provider. A bare callable runs with no arguments. The answer retains its value type and identity; it is not automatically Boolean."},
     {":=","NAME := EXPRESSION\nBind a retained, lazy program form. EXPRESSION = NAME is its inverse orientation."},
     {"=","EXPRESSION = NAME\nInverse binding. Equivalent to NAME := EXPRESSION."},
     {"|","PRODUCER | CONSUMER\nEquivalent to CONSUMER PRODUCER and CONSUMER(PRODUCER). Native stages use live byte streams; ordinary values retain structure."},
-    {":", "B : A\nEquivalent to A () B. Attached :name is a semantic Name and is a different form."},
+    {":", "BODY : BINDER\nEquivalent to BINDER() BODY: an abstraction waiting for an argument. Application substitutes the argument for free binder occurrences, with intentional capture and no alpha-renaming. This does not assert a type. Attached -name is a semantic Name and is a different form."},
     {"@","@ NAME\nInspect the stable binding cell; this does not read its head."},
     {"*","* NAME | * (@ NAME)\nRead/reduce the cell's current head."},
+    {"_","_\nFresh anonymous position. Never a binding, implicit pipe hole, or previous result. As an abstraction binder it discards the argument."},
+    {"&&","A && B | && A B\nDemand B only if A succeeds. Otherwise retain A, including its process status. Equal precedence with ||; chains associate left."},
+    {"||","A || B | || A B\nRetain successful A; otherwise demand B. Equal precedence with &&; chains associate left. -or names this Program."},
+    {"<","A < B | < A B\nStrict ordering of numeric literals or strings. Reverse operands for the inverse. -lt names this Program."},
+    {"<=","A <= B | <= A B\nOrdering or equal value. -le names this Program; semantic classification belongs to providers."},
+    {">","VALUE > DESTINATION\nRoute to a file path or callable sink. Native stdout streams directly to the file; text writes exact bytes; structured values write a hirari.values/1 envelope."},
+    {">>","VALUE >> DESTINATION\nAppend instead of replacing file contents. A callable sink receives -append before the value."},
     {"if","if CONDITION CONSEQUENT [ALTERNATE]\nOnly the chosen branch evaluates. Process success uses exit status."},
-    {"for","for :ITEM :(VALUES ...) BODY\nIterate structured values. The previous ITEM binding is restored, including on failure."},
+    {"for","for -ITEM -(VALUES ...) BODY\nIterate structured values. The previous ITEM binding is restored, including on failure."},
     {"truth","truth VALUE\nTests Unit/false/zero/empty values, or a process's exit status."},
     {"source","source \"FILE.seed\" [ARGUMENTS ...]\nEvaluate definitions in the caller's scope. File-relative includes preserve argument frames."},
     {"run","run \"FILE.seed\" [ARGUMENTS ...]\nInvoke a Seed program. Restore caller definitions, cwd and world selection afterward. External effects remain."},
@@ -32,15 +39,17 @@ const std::map<std::string,std::string> documentation{
     {"argc","argc\nNumber of arguments in the active Seed program."},
     {"script-directory","script-directory\nDirectory of the currently executing .seed program."},
     {"path","path \"ROOT\" \"SEGMENT\" ...\nJoin filesystem paths without rewriting arbitrary program arguments."},
-    {"apply","apply :PROGRAM :(ARGUMENTS ...)\nInvoke a reified program with a structured argument product. apply :(exec \"program\") (args) forwards script arguments."},
+    {"apply","apply -PROGRAM -(ARGUMENTS ...)\nInvoke a reified program with a structured argument product. apply -(exec \"program\") (args) forwards script arguments."},
     {"exec","exec \"PROGRAM PATH\" [ARGUMENTS ...]\nLaunch an executable with argument values. No shell-text reparsing."},
+    {"provide","provide \"EXECUTABLE\" [STRUCTURED ARGUMENTS ...]\nInvoke a program using hirari.values/1. Results retain records, lists, types, Names and Unit. Provider records are inert data; live CLR identities cannot cross this boundary."},
+    {"data","data bind -NAME VALUE | get RECORD \"FIELD\" | at LIST INDEX | size VALUE | kind VALUE | read \"FILE\" | integer ANSWER | real ANSWER | json VALUE | text VALUE | print VALUES...\nRetain and inspect typed data. integer/real explicitly decode native text; read restores one value envelope; kind reports physical representation. bind evaluates once; ordinary := retains a program form."},
     {"cd","cd [\"PATH\"]\nChange the filesystem working directory. Without an argument, use the user profile."},
     {"pwd","pwd\nShow the filesystem working directory."},
     {"exit","exit\nEnd Hirari. Skunkworks and authored Unity objects remain alive."},
     {"quit","quit\nEnd Hirari. Equivalent to exit."},
     {"world","world open \"ROOT\" | world status\nRead a generic world.toml descriptor and invoke its Seed entry. Failures restore previous context."},
-    {"unity","unity connect | status | disconnect\nunity type \"CLR.TYPE\" | find \"ROOT/NAME\"\nunity new TYPE ARGS | new-exact TYPE :(SIGNATURE) ARGS\nunity component OBJECT TYPE\nunity get TARGET \"MEMBER\" | set TARGET \"MEMBER\" VALUE\nunity call TARGET \"METHOD\" ARGS\nunity call-exact TARGET \"METHOD\" :(SIGNATURE) ARGS\nunity call-generic TARGET \"METHOD\" :(TYPEARGS) ARGS\nunity bind :NAME (OPERATION)\nunity batch :((OPERATION ...) ...) | at RESULTS INDEX\nunity help TARGET [\"MEMBER\" OFFSET COUNT]\nunity wait REQUEST [\"COMPLETION_MEMBER\" TIMEOUT_MS]\nunity release HANDLE\nReturned objects/arrays remain in Mono; the shell carries identity. Unit () maps to CLR null. Releasing a handle does not destroy the resource. Disconnect drops this connection's handles."},
-    {"vocab","vocab status | list | history :NAME\nvocab save :NAME [\"DESCRIPTION\"]\nvocab restore :NAME REVISION | forget :NAME\nvocab use \"DIRECTORY\"\nDurable structural definitions with revision history. Interactive top-level definitions save automatically; script scopes remain transient. Live CLR handles cannot be saved. HIRARI_STATE selects the user store; '-' disables it."}
+    {"unity","unity connect | status | disconnect\nunity type \"CLR.TYPE\" | find \"ROOT/NAME\"\nunity new TYPE ARGS | new-exact TYPE -(SIGNATURE) ARGS\nunity component OBJECT TYPE\nunity get TARGET \"MEMBER\" | set TARGET \"MEMBER\" VALUE\nunity call TARGET \"METHOD\" ARGS\nunity call-exact TARGET \"METHOD\" -(SIGNATURE) ARGS\nunity call-generic TARGET \"METHOD\" -(TYPEARGS) ARGS\nunity bind -NAME (OPERATION)\nunity batch -((OPERATION ...) ...) | at RESULTS INDEX\nunity help TARGET [\"MEMBER\" OFFSET COUNT]\nunity wait REQUEST [\"COMPLETION_MEMBER\" TIMEOUT_MS]\nunity release HANDLE\nReturned objects/arrays remain in Mono; the shell carries identity. Unit () maps to CLR null. Releasing a handle does not destroy the resource. Disconnect drops this connection's handles."},
+    {"vocab","vocab status | list | history -NAME\nvocab save -NAME [\"DESCRIPTION\"]\nvocab restore -NAME REVISION | forget -NAME\nvocab use \"DIRECTORY\"\nDurable structural definitions with revision history. Interactive top-level definitions save automatically; script scopes remain transient. Live CLR handles cannot be saved. HIRARI_STATE selects the user store; '-' disables it."}
 };
 }
 seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
@@ -65,6 +74,12 @@ seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
         if(r.is_name(subject)){
             auto target=r.as_name(subject)->target;if(!r.is_symbol(target)){out<<"reified value: "<<r.print(target)<<'\n';break;}subject=target;
         }
+        if(r.is_abstraction(subject)){
+            seed::Ptr binder=nullptr,body=nullptr;r.abstraction(subject,binder,body);
+            auto first=r.is_relation(body)?r.terms(r.as_node(body)).front():body;
+            if(r.is_literal(first))out<<r.as_literal(first)->bytes<<'\n';
+            out<<"abstraction: "<<r.print(subject)<<"\nApply an argument to substitute its binder. Incoming symbols may be captured. The body is not evaluated until application.\n";break;
+        }
         if(r.is_relation(subject)){out<<"retained program form: "<<r.print(subject)<<'\n';auto t=r.terms(r.as_node(subject));if(t.empty())break;subject=t.front();continue;}
         if(!r.is_symbol(subject)){out<<"value: "<<r.print(subject)<<'\n';break;}
         auto symbol=r.as_symbol(subject);auto found=documentation.find(symbol->text);
@@ -77,7 +92,11 @@ seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
         if(!executable.empty()){out<<"native executable: "<<executable<<"\nUse exec \""<<executable<<"\" \"--help\" for its own documentation.\n";break;}
         auto path=shell.find_script(symbol->text);
         if(!path.empty()){
-            out<<"Seed program: "<<path_text(path)<<'\n';std::istringstream lines(read_source(path));std::string line;unsigned count=0;
+            auto source=read_source(path);auto form=r.read(source);
+            auto first=r.is_relation(form)?r.terms(r.as_node(form)).front():form;
+            out<<"Seed program: "<<path_text(path)<<'\n';
+            if(r.is_literal(first))out<<r.as_literal(first)->bytes<<'\n';
+            std::istringstream lines(source);std::string line;unsigned count=0;
             while(count++<40 && std::getline(lines,line)){auto first=line.find_first_not_of(" \t\r");if(first==std::string::npos)continue;if(line[first]!='#')break;out<<line.substr(first)<<'\n';}break;
         }
         out<<"unresolved identity; define it or place a program on HIRARI_PATH/PATH\n";break;

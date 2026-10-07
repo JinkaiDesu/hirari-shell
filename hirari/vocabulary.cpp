@@ -22,6 +22,8 @@ void encode(seed::Runtime& r,seed::Ptr p,std::string& out,const std::function<bo
     if(depth>64 || out.size()>maximum)throw std::runtime_error("definition exceeds persistence budget");
     if(opaque(p))throw std::runtime_error("live CLR identities cannot be persisted; save a program that finds or constructs the object");
     if(r.is_unit(p)){out+='U';return;}
+    if(r.is_wildcard(p)){out+='W';return;}
+    if(r.is_number(p)){out+='D';string(out,r.as_number(p)->spelling);return;}
     if(r.is_symbol(p)){out+='S';string(out,r.as_symbol(p)->text);return;}
     if(r.is_literal(p)){out+='L';string(out,r.as_literal(p)->bytes);return;}
     if(r.is_name(p)){out+='N';encode(r,r.as_name(p)->target,out,opaque,depth+1);return;}
@@ -34,6 +36,8 @@ seed::Ptr decode(seed::Runtime& r,std::string_view in,std::size_t& p,unsigned de
     if(depth>64 || p>=in.size())throw std::runtime_error("invalid persistent structure");
     switch(in[p++]) {
     case 'U':return r.arena().unit();
+    case 'W':return r.arena().make_wildcard();
+    case 'D':return r.arena().make_number(string(in,p));
     case 'S':return r.intern(string(in,p));
     case 'L':return r.arena().make_literal(string(in,p));
     case 'N':return r.arena().make_name(decode(r,in,p,depth+1));

@@ -40,6 +40,12 @@ struct Literal {
     std::string bytes;
 };
 
+struct Number {
+    std::string spelling;
+    std::int64_t integer = 0;
+    double real = 0;
+};
+
 struct Cell {
     Symbol* symbol = nullptr;
     Ptr head = nullptr;
@@ -53,10 +59,29 @@ enum class HostKind : std::uint8_t {
     Symbol,
     Name,
     Literal,
-    Cell
+    Cell,
+    Wildcard,
+    Integer,
+    Real
 };
 
 class Runtime;
+
+#ifdef SEED_PROFILE
+// Work counts are compiled only into the separate profiling benchmark.
+struct WorkProfile {
+    std::uint64_t nodes = 0;
+    std::uint64_t relations = 0;
+    std::uint64_t term_walks = 0;
+    std::uint64_t terms_copied = 0;
+    std::uint64_t abstraction_checks = 0;
+    std::uint64_t body_extractions = 0;
+    std::uint64_t substitution_visits = 0;
+    std::uint64_t reduction_steps = 0;
+    std::uint64_t compositions = 0;
+    std::uint64_t applications = 0;
+};
+#endif
 
 // -----------------------------------------------------------------------------
 // Program ABI
@@ -118,6 +143,10 @@ class Arena {
 public:
     Arena();
 
+#ifdef SEED_PROFILE
+    WorkProfile& profile() const noexcept { return profile_; }
+#endif
+
     Node* make_node(
         Ptr head = nullptr
     );
@@ -146,6 +175,10 @@ public:
         Symbol* symbol
     );
 
+    // Each anonymous position is fresh and has no symbol or binding cell.
+    Ptr make_wildcard();
+    Ptr make_number(std::string_view spelling);
+
     HostKind kind(
         Ptr p
     ) const;
@@ -156,6 +189,9 @@ public:
     ) const;
 
 private:
+#ifdef SEED_PROFILE
+    mutable WorkProfile profile_;
+#endif
     std::vector<
         std::unique_ptr<Node>
     > nodes_;
@@ -171,6 +207,8 @@ private:
     std::vector<
         std::unique_ptr<Literal>
     > literals_;
+
+    std::vector<std::unique_ptr<Number>> numbers_;
 
     std::vector<
         std::unique_ptr<Cell>
@@ -227,6 +265,7 @@ public:
 
     // Shared by file execution and the interactive continuation prompt.
     static bool source_complete(std::string_view source);
+    static bool source_has_form(std::string_view source);
 
 private:
     Runtime& runtime_;
@@ -250,7 +289,6 @@ private:
 
     Ptr read_form();
     Ptr read_group();
-    Ptr read_colon_form();
     Ptr read_literal();
     Ptr read_symbol();
 
@@ -437,6 +475,18 @@ public:
     Ptr flow(Node* relation, std::vector<Ptr>& stages);
     // Expand a callable binding head structurally, without reducing its arguments.
     Ptr application(Ptr form);
+
+    // Abstractions remain ordinary pointer products: binder, Unit, body.
+    // The mirror body : binder has the same meaning; there is no Lambda payload.
+    bool is_abstraction(Ptr form) const;
+    bool abstraction(Ptr form, Ptr& binder, Ptr& body);
+    // Replace free occurrences of the exact binder identity. Incoming symbols
+    // may be captured; Names, literals and cells remain opaque values.
+    Ptr substitute(Ptr body, Ptr binder, Ptr replacement);
+
+    bool is_wildcard(Ptr p) const;
+    bool is_number(Ptr p) const;
+    Number* as_number(Ptr p) const;
 
     // -------------------------------------------------------------------------
     // Stable cells
