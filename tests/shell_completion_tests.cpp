@@ -30,6 +30,11 @@ int wmain(int argc,wchar_t** argv) {
         require(process("say \"z\" \"a\" | hirari_test_program sort").out=="a\nz\n","alias pipeline expansion");
         require(process("apply :(hirari_test_program emit \"prefix\") :(\"appended\" :semantic)").out=="prefix\nappended\nsemantic\n","apply lost structural argument forwarding");
         write(root/L"named.seed","# Returns its argument without flattening identity\narg 0\n");
+        write(root/L"forward-file.seed","apply :(hirari_test_program emit (script-directory) (argc)) (args)\n");
+        require(process("forward-file \"appended\" :semantic").out==hirari::path_text(root)+"\n2\nappended\nsemantic\n","script frame values failed structural forwarding");
+        write(root/L"forward-name.seed","apply :named (args)\n");
+        require(r.is_name(run("forward-name :semantic")),"forwarding a script argument flattened its identity");
+        require(!r.binding(r.intern("args")) && !r.binding(r.intern("argc")) && !r.binding(r.intern("script-directory")),"script frame facts escaped their call scope");
         run("named-alias := named");require(r.is_name(run("named-alias :semantic")),"script alias lost Name identity");
         run("danger := hirari_test_program fail");
         auto help=run("? danger");require(r.is_literal(help)&&r.as_literal(help)->bytes.find("danger :=")!=std::string::npos,"help did not inspect retained binding");

@@ -306,7 +306,7 @@ void Shell::wait_foreground() {
 
 int Shell::run() {
     interactive_session_ = true;
-    host_.write("ƸӜƷ Hirari · Seed `/\n\n");
+    host_.write("Hirari / Seed\n\n");
     std::string line;
     for (;;) {
 #ifdef _WIN32
@@ -534,9 +534,14 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
     auto saved_directory = std::filesystem::current_path();
     auto saved_world = worlds_;
     auto saved_world_env = shell_environment(L"SKUNK_WORLD");
+    // Frame facts are values, so grouping (args), (argc) and
+    // (script-directory) reads them without inventing zero-argument call syntax.
+    std::vector<seed::Cell> frame_cells;
+    for(const auto* name:{"args","argc","script-directory"})frame_cells.push_back(*seed_.ensure_cell(seed_.intern(name)));
     script_frames_.push_back({std::filesystem::absolute(path), std::move(arguments)});
     OnExit scope{[&, local] {
         script_frames_.pop_back();
+        for(const auto& cell:frame_cells)*seed_.ensure_cell(cell.symbol)=cell;
         if (local) {
             seed_.restore_bindings(saved_bindings);
             std::error_code ignored;
@@ -548,6 +553,9 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
 #endif
         }
     }};
+    seed_.bind(seed_.intern("args"),seed_.arena().make_name(seed_.product(script_frames_.back().arguments)));
+    seed_.bind(seed_.intern("argc"),seed_.intern(std::to_string(script_frames_.back().arguments.size())));
+    seed_.bind(seed_.intern("script-directory"),seed_.arena().make_literal(path_text(script_frames_.back().path.parent_path())));
     std::istringstream lines(source);
     std::string line, pending;
     std::size_t number = 0, start = 1;

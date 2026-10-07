@@ -230,6 +230,11 @@ all argument values. Names, literals, Unit and retained Unity references stay
 distinct; they are not reparsed command strings. The CLI also accepts
 `hirari --file tool.seed argument...`, projecting native argv into literals.
 
+`args`, `argc` and `script-directory` are also frame-local values, available
+inside grouped expressions such as `(args)` and `(script-directory)`. Nested
+calls and `source` restore the caller's frame values even on failure. Grouping
+one symbol reads it; it does not secretly invoke a zero-argument program.
+
 Discovered commands and `run` restore caller binding heads/revisions, working
 directory and world selection after success or failure. `source` exports its
 binding/context changes into the caller. Both restore the previous argument
