@@ -1,0 +1,3 @@
+# Vendored dependency locks identify upstream bytes, regardless of core.autocrlf.
+hirari/vendor/** -text
+*.png binary
