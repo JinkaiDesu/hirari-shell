@@ -233,6 +233,73 @@ Substitution substitute_product(Runtime& runtime, RelationSlice slice, Ptr binde
     return changed ? Substitution{runtime.arena().make_relation(forms), true} : Substitution{};
 }
 
+#ifdef SEED_DEFERRED_EXPERIMENT
+// An ordered environment, not a recursively resolved map. Later substitutions
+// can capture earlier replacements; earlier substitutions never rewrite later
+// arguments. Keep it local to an uninterrupted chain and materialize before
+// returning any Ptr. This first experiment deliberately retains literal
+// substitution for the final body, avoiding new public payloads or lazy Nodes.
+struct PendingSubstitution { Ptr binder; Ptr replacement; };
+
+bool stable_curry_argument(const Runtime& runtime, Ptr value) {
+    if (!value || runtime.is_relation(value) || runtime.is_unit(value) ||
+        runtime.is_literal(value)) return false;
+    if (runtime.is_symbol(value)) {
+        const auto& text = runtime.as_symbol(value)->text;
+        for (auto glyph : {":=", "=", "&&", "||", ">", ">>", "<", "<=", "|", ":"})
+            if (text == glyph) return false;
+    }
+    return true;
+}
+
+Ptr deferred_curry(Runtime& runtime, Ptr binder, Ptr body,
+                   const std::vector<Ptr>& terms, std::size_t remaining_steps,
+                   std::size_t& extra_steps) {
+    auto& stats = runtime.deferred_stats();
+    ++stats.attempts;
+    // Explicit identity queries dispatch before beta reduction. Registered
+    // commands are no longer ambient observers of every intermediate product.
+    if (terms.size() < 3 || remaining_steps < 2 ||
+        !stable_curry_argument(runtime, terms[1])) return nullptr;
+    std::vector<PendingSubstitution> pending{{binder, terms[1]}};
+    std::size_t applied = 1;
+    Ptr current = body;
+    while (applied + 1 < terms.size() && applied < remaining_steps) {
+        if (!stable_curry_argument(runtime, terms[applied + 1]) ||
+            !runtime.is_relation(current)) break;
+        AbstractionView inner;
+        if (!abstraction_view(runtime, {runtime.as_node(current), nullptr}, inner) ||
+            !inner.canonical || next_term(inner.body.begin) != inner.body.end) break;
+        Ptr next_body = inner.body.begin->head;
+        // Do not elide body extraction, colon normalization or docstring
+        // stripping when they can change the intermediate product.
+        if (runtime.is_relation(next_body)) {
+            auto first = runtime.as_node(next_body);
+            if (first->ref && runtime.is_literal(first->head)) break;
+        }
+        // Same-identity shadowing blocks a prior substitution into this entire
+        // original body. An inserted free identity is still captured by the
+        // new frame below when final materialization applies frames in order.
+        std::erase_if(pending, [&](const PendingSubstitution& frame) {
+            return frame.binder == inner.binder;
+        });
+        pending.push_back({inner.binder, terms[applied + 1]});
+        current = next_body;
+        ++applied;
+    }
+    if (applied == 1) return nullptr;
+    for (const auto& frame : pending)
+        current = runtime.substitute(current, frame.binder, frame.replacement);
+    for (std::size_t i = applied + 1; i < terms.size(); ++i)
+        current = runtime.compose(current, terms[i]);
+    ++stats.chains;
+    stats.deferred_betas += applied;
+    ++stats.materializations;
+    extra_steps = applied - 1; // Charge exactly the omitted beta steps.
+    return current;
+}
+#endif
+
 Ptr demand_program_form(Runtime& runtime, Ptr form);
 
 // -----------------------------------------------------------------------------
@@ -1064,6 +1131,12 @@ bool Reader::source_has_form(std::string_view source) {
     return skip_trivia(source, pos) == TriviaStatus::Complete && pos < source.size();
 }
 
+bool Reader::source_leading_pipe(std::string_view source) {
+    std::size_t pos = 0;
+    if (skip_trivia(source, pos) != TriviaStatus::Complete || pos >= source.size()) return false;
+    return source[pos] == '|' && (pos + 1 == source.size() || source[pos + 1] != '|');
+}
+
 bool Reader::source_complete(std::string_view source) {
     int depth = 0;
     std::size_t pos = 0;
@@ -1221,6 +1294,22 @@ Ptr Reader::read_group() {
 }
 
 Ptr Reader::read_literal() {
+    return runtime_.arena().make_literal(read_literal_bytes());
+}
+
+std::string Reader::documentation(std::string_view source) {
+    const auto saved_source = source_;
+    const auto saved_pos = pos_;
+    struct Restore {
+        Reader& reader; std::string_view source; std::size_t pos;
+        ~Restore() { reader.source_ = source; reader.pos_ = pos; }
+    } restore{*this, saved_source, saved_pos};
+    source_ = source; pos_ = 0;
+    skip_space();
+    return peek() == '"' ? read_literal_bytes() : std::string{};
+}
+
+std::string Reader::read_literal_bytes() {
     take();
     bool triple = peek() == '"' && peek(1) == '"';
     if (triple) { take(); take(); }
@@ -1233,11 +1322,7 @@ Ptr Reader::read_literal() {
 
         if (c == '"' && (!triple || (peek() == '"' && peek(1) == '"'))) {
             if (triple) { take(); take(); }
-            return
-                runtime_.arena()
-                    .make_literal(
-                        bytes
-                    );
+            return bytes;
         }
 
         if (c == '\\') {
@@ -1718,10 +1803,16 @@ Ptr Reducer::reduce(
         step < max_steps_;
         ++step
     ) {
+#ifdef SEED_DEFERRED_EXPERIMENT
+        std::size_t extra_steps = 0;
         Ptr next =
             reduce_once(
-                current
+                current, extra_steps, max_steps_ - step
             );
+        step += extra_steps;
+#else
+        Ptr next = reduce_once(current);
+#endif
 
         if (
             next ==
@@ -1741,6 +1832,9 @@ Ptr Reducer::reduce(
 
 Ptr Reducer::reduce_once(
     Ptr form
+#ifdef SEED_DEFERRED_EXPERIMENT
+    , std::size_t& extra_steps, std::size_t remaining_steps
+#endif
 ) {
     SEED_COUNT(runtime_, reduction_steps);
     if (!form) {
@@ -1749,7 +1843,11 @@ Ptr Reducer::reduce_once(
 
     switch (runtime_.arena().kind(form)) {
     case HostKind::Node:
+#ifdef SEED_DEFERRED_EXPERIMENT
+        return reduce_relation(static_cast<Node*>(form), extra_steps, remaining_steps);
+#else
         return reduce_relation(static_cast<Node*>(form));
+#endif
     case HostKind::Symbol:
         if (Ptr current = runtime_.binding(static_cast<Symbol*>(form))) return current;
         return form;
@@ -1760,6 +1858,9 @@ Ptr Reducer::reduce_once(
 
 Ptr Reducer::reduce_relation(
     Node* relation
+#ifdef SEED_DEFERRED_EXPERIMENT
+    , std::size_t& extra_steps, std::size_t remaining_steps
+#endif
 ) {
     Ptr binder = nullptr;
     Ptr body = nullptr;
@@ -1772,6 +1873,8 @@ Ptr Reducer::reduce_relation(
                                      slice_product(runtime_, view.body)});
         return relation;
     }
+    if (auto query = runtime_.identity_query(relation))
+        return query.invoke(runtime_, relation, query.context);
     // Orient the whole relation before any native head can perform effects.
     // In particular, binding and flow must not execute their producer twice.
     auto terms = runtime_.terms(relation);
@@ -1790,13 +1893,6 @@ Ptr Reducer::reduce_relation(
             }
         }
     }
-    // Host inspection must see the retained alias before callable expansion.
-    for (auto spelling : {"?", "help"}) {
-        auto program = runtime_.registry().find(runtime_.intern(spelling));
-        if (!program) continue;
-        Ptr inspected = program.invoke(runtime_, relation, program.context);
-        if (inspected != relation) return inspected;
-    }
     Ptr expanded = runtime_.application(relation);
     if (expanded != relation) return expanded;
     if (terms.size() >= 2 && runtime_.is_relation(terms.front())) {
@@ -1810,6 +1906,13 @@ Ptr Reducer::reduce_relation(
                     body = slice_product(runtime_, {next_term(first), nullptr});
             }
             // The argument is substituted as written, not demanded first.
+#ifdef SEED_DEFERRED_EXPERIMENT
+            if (runtime_.deferred_substitution()) {
+                if (Ptr result = deferred_curry(runtime_, binder, body, terms,
+                                                 remaining_steps, extra_steps))
+                    return result;
+            }
+#endif
             Ptr result = runtime_.substitute(body, binder, terms[1]);
             for (std::size_t i = 2; i < terms.size(); ++i)
                 result = runtime_.compose(result, terms[i]);
@@ -1830,7 +1933,7 @@ Ptr Reducer::reduce_relation(
         if (spelling == ":=" || spelling == "=" || spelling == "|" || spelling == ":" ||
             spelling == "&&" || spelling == "||") continue;
         Program program = runtime_.registry().find(runtime_.as_symbol(term));
-        if (!program) continue;
+        if (!program || program.dispatch != ProgramDispatch::Ordinary) continue;
         Ptr result = program.invoke(runtime_, relation, program.context);
         if (result != relation) return result;
     }
@@ -1872,10 +1975,16 @@ Ptr Runtime::flow(Node* relation, std::vector<Ptr>& stages) {
 // Runtime
 // =============================================================================
 
+#ifdef SEED_DEFERRED_EXPERIMENT
+Runtime::Runtime(bool deferred_substitution)
+    : deferred_substitution_(deferred_substitution), reader_(*this),
+      printer_(*this), reducer_(*this) {
+#else
 Runtime::Runtime()
     : reader_(*this),
       printer_(*this),
       reducer_(*this) {
+#endif
 
     define("truth", &program_truth);
     define("apply", &program_apply);
@@ -1932,6 +2041,31 @@ void Runtime::define(
         intern(symbol),
         program
     );
+}
+
+Program Runtime::identity_query(Ptr form) const {
+    if (!is_relation(form)) return {};
+    auto first = as_node(form);
+    auto lookup = [&](Ptr identity) {
+        if (!is_symbol(identity)) return Program{};
+        auto program = registry_.find(as_symbol(identity));
+        return program.dispatch == ProgramDispatch::IdentityQuery ? program : Program{};
+    };
+    if (auto prefix = lookup(first->head)) {
+        auto argument = next_term(first);
+        auto route = argument ? next_term(argument) : nullptr;
+        // Routing a query's answer is ordinary composition. Only a complete
+        // one-identity request can leave its routing to the enclosing product.
+        if (route && (is_symbol(argument->head) || is_cell(argument->head) ||
+            (is_name(argument->head) && is_symbol(as_name(argument->head)->target))) &&
+            (is_symbol_text(*this, route->head, "|") ||
+             is_symbol_text(*this, route->head, ">") || is_symbol_text(*this, route->head, ">>")))
+            return {};
+        return prefix;
+    }
+    auto last = first;
+    while (last->ref) last = next_term(last);
+    return last != first ? lookup(last->head) : Program{};
 }
 
 Ptr Runtime::read(
@@ -2140,6 +2274,60 @@ void Runtime::bind(
     Symbol* symbol,
     Ptr value
 ) {
+    auto metadata = std::make_shared<BindingMetadata>();
+    metadata->origin = binding_origin_;
+    metadata->source_file = binding_source_;
+    if (!value) metadata->kind = "unbound";
+    else if (is_relation(value)) {
+        metadata->kind = "program";
+        RelationSlice current{as_node(value), nullptr};
+        std::vector<RelationSlice> seen;
+        for (unsigned depth = 0; depth < 64; ++depth) {
+            if (std::any_of(seen.begin(), seen.end(), [&](RelationSlice old) {
+                return old.begin == current.begin && old.end == current.end;
+            })) break;
+            seen.push_back(current);
+            AbstractionView view;
+            if (!abstraction_view(*this, current, view)) {
+                auto first = current.begin->head;
+                if (is_symbol(first)) metadata->provider = as_symbol(first)->text;
+                break;
+            }
+            metadata->kind = "abstraction";
+            metadata->parameters.push_back(is_wildcard(view.binder) ? "_" : as_symbol(view.binder)->text);
+            auto body = view.body;
+            Ptr first = body.begin->head;
+            AbstractionView nested;
+            if (next_term(body.begin) != body.end && abstraction_view(*this, body, nested)) {
+                current = body; continue;
+            }
+            if (next_term(body.begin) == body.end && is_relation(first)) {
+                if (is_abstraction(first)) { current = {as_node(first), nullptr}; continue; }
+                body = {as_node(first), nullptr};
+                first = body.begin->head;
+            }
+            if (is_literal(first)) {
+                if (metadata->docstring.empty()) metadata->docstring = as_literal(first)->bytes;
+                body.begin = next_term(body.begin);
+            }
+            if (body.begin == body.end) break;
+            if (next_term(body.begin) != body.end) {
+                if (is_symbol(body.begin->head)) metadata->provider = as_symbol(body.begin->head)->text;
+                break;
+            }
+            Ptr remaining = body.begin->head;
+            if (!is_relation(remaining)) {
+                if (is_symbol(remaining)) metadata->provider = as_symbol(remaining)->text;
+                break;
+            }
+            current = {as_node(remaining), nullptr};
+        }
+    } else if (is_symbol(value)) {
+        metadata->kind = "alias";
+        metadata->alias = as_symbol(value)->text;
+    } else metadata->kind = "value";
+    if (std::find(metadata->parameters.begin(), metadata->parameters.end(), metadata->provider) != metadata->parameters.end())
+        metadata->provider.clear();
     Cell* cell =
         ensure_cell(
             symbol
@@ -2149,6 +2337,7 @@ void Runtime::bind(
         value;
 
     ++cell->revision;
+    cell->metadata = std::move(metadata);
 }
 
 std::vector<Cell> Runtime::capture_bindings() const {
@@ -2162,6 +2351,7 @@ Ptr Runtime::application(Ptr form) {
     SEED_COUNT(*this, applications);
     if (!is_relation(form)) return form;
     if (is_abstraction(form)) return form;
+    if (identity_query(form)) return form;
     auto relation = static_cast<Node*>(form);
     if (!is_symbol(relation->head)) return form;
     auto consumer = static_cast<Symbol*>(relation->head);
@@ -2232,7 +2422,7 @@ Number* Runtime::as_number(Ptr p) const {
 }
 
 void Runtime::restore_bindings(const std::vector<Cell>& saved) {
-    for (const auto& [symbol, cell] : cells_) cell->head = nullptr;
+    for (const auto& [symbol, cell] : cells_) { cell->head = nullptr; cell->metadata.reset(); }
     for (const auto& state : saved) *ensure_cell(state.symbol) = state;
 }
 

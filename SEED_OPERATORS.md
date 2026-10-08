@@ -34,8 +34,9 @@ String ordering compares UTF-8 bytes; numeric ordering preserves int64 precision
 `"""multiline text"""` uses the same String payload as ordinary quotes. Newlines,
 single/double quotes, and comment markers inside it are content. Escapes are
 preserved; only the closing triple delimiter ends it. The continuation scanner
-waits for that delimiter. A leading body string is documentation: help reads it
-without execution. In an abstraction with remaining body structure it is skipped
+waits for that delimiter. A leading body string is documentation: binding records
+it as immutable metadata for the current revision. Help reads that metadata without
+extracting, printing, reducing or materializing the executable body. In an abstraction with remaining body structure it is skipped
 on application; a lone string stays a constant. Script documentation is suppressed
 when execution proceeds to the next form, and remains the result of a doc-only file.
 
@@ -45,6 +46,22 @@ not strings. `-pipe`, `-bind`, `-lt`, `-le`, `-and`, `-or` name the existing
 Programs `|`, `=`, `<`, `<=`, `&&`, `||`. `help -pipe` inspects that identity.
 Explicit grouping preserves a raw identity: `-(lt)` names the Symbol `lt`,
 while `-lt` names `<`. The printer retains this distinction.
+
+`help -NAME`, `? -NAME` and `NAME help` read identity descriptions. A bare Symbol
+is also accepted as an identity without resolving its executable head. Binding
+metadata includes docstring, ordered abstraction arguments, origin/source and
+revision; aliases point to identity metadata. Script help reads only leading
+documentation/comments, so a malformed executable body does not prevent help.
+Native programs are discovered without invoking `--help`; Unity metadata requests
+are never sent by help. Query results remain ordinary strings and can be piped or
+redirected. Compound executable subjects belong to `inspect`, not help.
+
+`inspect -NAME` explicitly reads retained structure or live CLR member metadata.
+Help is an explicit identity-query Program dispatch contract, not an observer
+called on every product. Definition metadata survives scope restoration and is
+recovered when durable vocabulary is loaded. Raw host pointer edits do not create
+a binding revision: rebind to refresh its metadata, or use inspect to see raw edits.
+
 At native argv boundaries a symbolic Name projects to its flag spelling:
 `-c` becomes the bytes `-c`. Quote an ordinary non-flag argument such as `"camera"`.
 Live CLR identities and structured records/lists require explicit projection.
@@ -139,10 +156,31 @@ tokens or creates attached syntax across lines. Other backslashes remain ordinar
 symbol characters; a dangling continuation at EOF is incomplete source. Comments
 do not continue source, and continuations inside literals are not stripped.
 
-Hirari's prompt and script runner submit complete top-level forms at physical
-line boundaries. Continuation suppresses that submission until the next line;
-open groups/strings/comments also keep the form pending. Inside a submitted
-product, ordinary newlines already behave like other whitespace.
+Files contain successive top-level expressions, evaluated in one shared file
+context. A top-level newline ends a complete expression unless the next semantic
+token is a leading `|`; file execution looks ahead before committing it. Blank
+lines and comments may separate pipeline stages. `||` is a distinct identity,
+not this continuation marker. EOF ends the final expression and yields its result.
+
+```seed
+FROM numbers
+| WHERE small
+| ORDER BY -n
+| SELECT -n
+| query
+| data json
+```
+
+That pipeline is one expression. Inside parentheses, newlines are ordinary
+whitespace; inside multiline literals they remain data. No indentation blocks,
+implicit function bodies or synthetic whole-file application are introduced.
+The shebang is entry metadata/comment trivia; a leading docstring is a literal
+with a documentation convention, not an executable command. Earlier definitions
+remain available to later expressions under the existing source/run scope rules.
+
+The interactive prompt commits input on Enter; it cannot look ahead at a future
+submission. Use open parentheses or trailing `\` there. Explicit continuation
+also remains valid in files, and open groups/strings/comments keep source pending.
 
 Literal spaces and physical newlines/tabs are data. Ordinary and triple-quoted
 strings both decode `\n`, `\r`, `\t`, `\\` and `\"`; triple quotes are already

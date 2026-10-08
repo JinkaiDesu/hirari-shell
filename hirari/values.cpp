@@ -5,6 +5,8 @@
 #include "hirari/win32.hpp"
 #include "hirari/world.hpp"
 #include <stdexcept>
+#include <algorithm>
+#include <optional>
 namespace hirari {
 namespace {
 std::string symbol(seed::Runtime& r,seed::Ptr p){if(r.is_name(p))p=r.as_name(p)->target;if(!r.is_symbol(p))throw std::runtime_error("expected an identity");return r.as_symbol(p)->text;}
@@ -13,7 +15,41 @@ std::vector<seed::Ptr> items(seed::Runtime& r,seed::Ptr p){if(r.is_unit(p))retur
 }
 Values::Values(seed::Runtime& r,ProcessHost& p,Host& h,std::function<bool(seed::Ptr)> opaque):runtime_(r),processes_(p),host_(h),opaque_(std::move(opaque)) {
     r.define("provide",&Values::provide,this);r.define("data",&Values::data,this);
+    r.define("capability",&Values::capability,this);
     r.define(">", &Values::route, this);r.define(">>", &Values::route, this);
+}
+void Values::link(std::string identity, std::string description, LinkedProvider invoke) {
+    if(identity.empty() || !invoke || providers_.contains(identity))throw std::runtime_error("capability already registered or invalid: "+identity);
+    providers_.emplace(std::move(identity),Provider{std::move(description),{},std::move(invoke)});
+}
+std::string Values::description(std::string_view identity) const {
+    auto found=providers_.find(std::string(identity));return found==providers_.end()?"":found->second.description;
+}
+seed::Ptr Values::capability(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
+    auto& self=*static_cast<Values*>(context);auto terms=r.terms(relation);
+    if(terms.size()<2)throw std::runtime_error("capability list | register -IDENTITY EXECUTABLE [DESCRIPTION]");
+    auto op=symbol(r,terms[1]);
+    if(op=="list" && terms.size()==2){Json out=Json::array();std::vector<std::string> names;for(const auto& [name,p]:self.providers_)names.push_back(name);std::sort(names.begin(),names.end());for(const auto& name:names){const auto& p=self.providers_.at(name);out.push_back({{"identity",name},{"transport",p.invoke?"linked":"process"},{"description",p.description}});}return self.decode(pack_value(out));}
+    if(op=="register" && (terms.size()==4 || terms.size()==5)){
+        auto name=symbol(r,terms[2]);auto executable=text(r,terms[3]);auto found=self.providers_.find(name);
+        if(found!=self.providers_.end() && (found->second.invoke || found->second.executable!=executable))throw std::runtime_error("capability identity already registered: "+name);
+        self.providers_[name]=Provider{terms.size()==5?text(r,terms[4]):"External typed provider: "+executable,executable,{}};
+        return r.arena().unit();
+    }
+    throw std::runtime_error("capability list | register -IDENTITY EXECUTABLE [DESCRIPTION]");
+}
+Json Values::form(seed::Ptr p,std::vector<seed::Ptr> bound,std::vector<seed::Ptr> expanding,unsigned depth) {
+    auto& r=runtime_;if(depth>64)throw std::runtime_error("form nesting exceeds 64");
+    if(r.is_symbol(p) && std::find(bound.begin(),bound.end(),p)==bound.end()){
+        if(auto value=r.binding(r.as_symbol(p))){if(std::find(expanding.begin(),expanding.end(),p)!=expanding.end())throw std::runtime_error("cyclic binding in form snapshot");expanding.push_back(p);return form(value,bound,expanding,depth+1);}
+    }
+    seed::Ptr binder=nullptr,body=nullptr;
+    if(r.is_abstraction(p) && r.abstraction(p,binder,body)){
+        bound.push_back(binder);return {{"kind","abstraction"},{"binder",form(binder,bound,expanding,depth+1)},{"body",form(body,bound,expanding,depth+1)}};
+    }
+    if(r.is_name(p))return encode(p,depth);
+    if(r.is_relation(p)){Json items=Json::array();for(auto term:r.terms(r.as_node(p)))items.push_back(form(term,bound,expanding,depth+1));return {{"kind","product"},{"value",items}};}
+    return encode(p,depth);
 }
 bool Values::structured(seed::Ptr p) const {
     auto& r=runtime_;if(!r.is_name(p) || !r.is_relation(r.as_name(p)->target))return false;
@@ -112,8 +148,15 @@ seed::Ptr Values::provide(seed::Runtime& r,seed::Node* relation,seed::Ptr contex
     auto& self=*static_cast<Values*>(context);auto terms=r.terms(relation);
     if(terms.empty() || !r.is_symbol(terms[0]) || r.as_symbol(terms[0])->text!="provide")return relation;
     if(terms.size()<2)throw std::runtime_error("provide \"EXECUTABLE\" [STRUCTURED ARGUMENTS ...]");
-    auto executable=text(r,terms[1]);Json arguments=Json::array();
+    auto target=r.reduce(terms[1]);std::string executable;std::optional<Provider> provider;
+    if(r.is_name(target)){
+        auto name=symbol(r,target);auto found=self.providers_.find(name);
+        if(found==self.providers_.end())throw std::runtime_error("capability not registered: "+name);
+        provider=found->second;executable=provider->executable;
+    }else executable=text(r,target);
+    Json arguments=Json::array();
     for(std::size_t i=2;i<terms.size();++i)arguments.push_back(self.encode(r.reduce(terms[i])));
+    if(provider && provider->invoke){std::vector<Json> args(arguments.begin(),arguments.end());return self.decode(provider->invoke(args));}
     ProcessResult input;input.out=Json{{"protocol",value_protocol},{"arguments",arguments}}.dump()+"\n";
     auto answer=self.processes_.execute(r,executable,{r.arena().make_literal("--values")},nullptr,std::move(input));
     ProcessResult result;if(!ProcessHost::unpack(r,answer,result))throw std::runtime_error("provider returned no process result");
@@ -137,6 +180,7 @@ seed::Ptr Values::data(seed::Runtime& r,seed::Node* relation,seed::Ptr context) 
     }
     if(operation=="bind" && terms.size()==4) {auto name=r.intern(symbol(r,terms[2]));auto value=r.reduce(terms[3]);r.bind(name,value);return value;}
     auto value=r.reduce(terms[2]);
+    if(operation=="form" && terms.size()==3)return self.decode(pack_value(Json{{"kind","seed.form"},{"term",self.form(value)}}));
     if ((operation == "integer" || operation == "real") && terms.size() == 3) {
         ProcessResult process;std::string spelling;
         if (ProcessHost::unpack(r,value,process)) {

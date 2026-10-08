@@ -1,0 +1,6 @@
+{
+  "name": "PCRE2", "version": "10.49", "width": 8,
+  "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.49/pcre2-10.49.tar.gz",
+  "sha256": "929f0b20e62879252a15886b06c89f1edef61a363cbd5826fb041080a5e557ae",
+  "license": "BSD-3-Clause WITH PCRE2-exception", "linkage": "static", "unicode": true, "jit": false
+}

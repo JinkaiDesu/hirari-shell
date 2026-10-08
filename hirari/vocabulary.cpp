@@ -1,5 +1,6 @@
 #include "hirari/vocabulary.hpp"
 #include "hirari/win32.hpp"
+#include "hirari/world.hpp"
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -7,6 +8,15 @@
 #include <algorithm>
 namespace hirari {
 namespace {
+struct MetadataOrigin {
+    seed::Runtime& runtime;
+    std::string origin, source;
+    MetadataOrigin(seed::Runtime& r, const std::filesystem::path& path)
+        : runtime(r), origin(r.binding_origin()), source(r.binding_source()) {
+        r.binding_origin("durable vocabulary", path_text(path / "vocabulary.bin"));
+    }
+    ~MetadataOrigin() { runtime.binding_origin(origin, source); }
+};
 constexpr std::size_t maximum = 16 * 1024 * 1024, records = 10000;
 void integer(std::string& out, std::uint64_t n) { for (int i=0;i<8;++i) out.push_back(static_cast<char>(n>>(i*8))); }
 std::uint64_t read_integer(std::string_view in, std::size_t& p) {
@@ -69,6 +79,7 @@ std::vector<Vocabulary::Revision> Vocabulary::read() const {
     }return result;
 }
 void Vocabulary::load(seed::Runtime& r) {
+    MetadataOrigin origin(r, directory_);
     std::vector<std::pair<seed::Symbol*,seed::Ptr>> values;
     for(const auto& [name,v]:current(read())){
         auto symbol=r.intern(name);if(r.registry().find(symbol))throw std::runtime_error("vocabulary cannot replace built-in: "+name);
@@ -105,6 +116,7 @@ void Vocabulary::save(seed::Runtime& r,const std::string& name,const std::string
     std::string encoded;encode(r,form,encoded,opaque);append({0,name,annotation,std::move(encoded)});
 }
 void Vocabulary::restore(seed::Runtime& r,const std::string& name,std::uint64_t number) {
+    MetadataOrigin origin(r, directory_);
     if(r.registry().find(r.intern(name)))throw std::runtime_error("cannot restore a built-in override");
     for(const auto& v:read())if(v.name==name && v.number==number){auto form=decode(r,v.form);append({0,name,v.annotation,v.form});r.bind(r.intern(name),form);return;}
     throw std::runtime_error("vocabulary revision not found");

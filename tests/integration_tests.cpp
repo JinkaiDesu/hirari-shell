@@ -132,6 +132,9 @@ void unity() {
     auto run=[&](const std::string& source){auto p=shell.execute(source);if(!p)throw std::runtime_error("shell failed: "+source+"\n"+host.err);return p;};
     run("unity bind -t (unity type \"UnityEngine.GameObject\")");run("unity bind -go (unity new t \"GenericProof\")");
     auto go=shell.seed().reduce(shell.seed().binding(shell.seed().intern("go")));require(shell.unity().foreign(go)&&!shell.seed().is_literal(go),"object reference became text");
+    auto metadata_requests = server.requests.load();
+    run("help -go");
+    require(server.requests == metadata_requests, "identity help issued Unity inspection requests");
     require(shell.seed().print(run("unity get go \"name\""))=="\"GenericProof\"","get result");
     run("unity set go \"name\" \"RenamedProof\"");
     require(shell.seed().print(run("unity get go \"name\""))=="\"RenamedProof\"","set/get did not address the same object");
@@ -328,7 +331,10 @@ void shell_programs(const std::filesystem::path& helper) {
     require(r.print(run("scope"))=="\"callee\"", "Seed command result not returned");
     require(r.print(run("scope?"))=="\"callee\"", "bare attached script did not invoke its provider");
     host.out.clear();
-    require(run("? scope?") && host.out.find("retained program form")!=std::string::npos && r.print(run("local"))=="\"caller\"", "help invoked an attached producer");
+    require(run("inspect scope?") && host.out.find("retained program form")!=std::string::npos && r.print(run("local"))=="\"caller\"", "inspection invoked an attached producer");
+    require(run("help -scope") && r.print(run("local"))=="\"caller\"", "identity help invoked its script");
+    require(!shell.execute("? scope?") && r.print(run("local"))=="\"caller\"", "metadata help forced an attached producer");
+    host.err.clear();
     require(r.print(run("local"))=="\"caller\"" && cell->revision==revision && !r.binding(r.intern("new-local")), "call scope leaked bindings or replaced cells");
     run("source "+quote(path_text(fixture.root/"scope.seed")));
     require(r.print(run("local"))=="\"callee\"", "source did not export bindings");

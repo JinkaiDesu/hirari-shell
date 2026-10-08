@@ -79,12 +79,14 @@ private:
     static seed::Ptr script_argument(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr exec(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr help(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr inspect(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr vocabulary(seed::Runtime&, seed::Node*, seed::Ptr);
     void wait_foreground();
     seed::Ptr evaluate(std::string_view source, bool display = true);
     seed::Ptr evaluate_script(const std::filesystem::path& path, std::vector<seed::Ptr> arguments = {}, bool local = false);
     std::filesystem::path find_script(const std::string& name, bool explicit_file = false) const;
     struct ScriptProgram { Shell* shell; std::filesystem::path path; };
+    static bool prefer_script(std::string_view);
     struct ScriptFrame { std::filesystem::path path; std::vector<seed::Ptr> arguments; };
     std::unordered_map<seed::Symbol*, std::unique_ptr<ScriptProgram>> scripts_;
     std::vector<ScriptFrame> script_frames_;

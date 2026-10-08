@@ -24,4 +24,15 @@ inline Json unpack_value(const Json& value, unsigned depth=0) {
     // Semantic Names/Symbols are never implicitly converted to text.
     throw std::runtime_error("this provider does not accept Seed "+kind+" as data; pass a literal or typed value");
 }
+// Optional structural argument interpretation for providers that accept Names.
+// It preserves identity/form tags instead of converting them to text or running them.
+inline Json unpack_argument(const Json& value, unsigned depth=0) {
+    if(depth>64)throw std::runtime_error("provider argument nesting exceeds 64");
+    auto kind=value.at("kind").get<std::string>();
+    if(kind=="name")return {{"$seed","name"},{"value",unpack_argument(value.at("value"),depth+1)}};
+    if(kind=="symbol")return {{"$seed","symbol"},{"value",value.at("value")}};
+    if(kind=="product" || kind=="list"){Json items=Json::array();for(const auto& item:value.at("value"))items.push_back(unpack_argument(item,depth+1));if(kind=="product")return {{"$seed","product"},{"value",items}};return items;}
+    if(kind=="record"){Json fields=Json::object();for(auto i=value.at("value").begin();i!=value.at("value").end();++i)fields[i.key()]=unpack_argument(i.value(),depth+1);return fields;}
+    return unpack_value(value,depth);
+}
 }

@@ -927,6 +927,15 @@ ProcessHost::foreign_program(
         return nullptr;
     }
 
+    // Match Shell's command discovery order when planning native pipelines.
+    // A vocabulary script can share a spelling with a PATH executable.
+    if(stream_resolver_) {
+        auto stream=stream_resolver_(symbol);
+        if(!stream.executable.empty()) {
+            auto& p=stream_programs_[symbol];if(!p)p=std::make_unique<ForeignProgram>();
+            *p={this,symbol,std::move(stream.executable),std::move(stream.prefix),true};return p.get();
+        }
+    }
     seed::Program resolved =
         resolve_symbol(
             runtime,
@@ -938,13 +947,6 @@ ProcessHost::foreign_program(
         resolved.invoke !=
             &ProcessHost::invoke
     ) {
-        if(stream_resolver_) {
-            auto stream=stream_resolver_(symbol);
-            if(!stream.executable.empty()) {
-                auto& p=stream_programs_[symbol];if(!p)p=std::make_unique<ForeignProgram>();
-                *p={this,symbol,std::move(stream.executable),std::move(stream.prefix),true};return p.get();
-            }
-        }
         return nullptr;
     }
 

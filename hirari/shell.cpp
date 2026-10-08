@@ -1,5 +1,6 @@
 #include "hirari/shell.hpp"
 #include "hirari/win32.hpp"
+#include "hirari/regex.hpp"
 
 #include <exception>
 #include <iostream>
@@ -59,6 +60,7 @@ Shell::Shell(
         seed_,
         host_
     ), unity_(seed_, host_), values_(seed_,processes_,host_,[this](auto p){return unity_.foreign(p)!=nullptr;}) {
+    install_regex(values_);
     seed_.set_resolver(
         &Shell::resolve,
         this
@@ -72,11 +74,14 @@ Shell::Shell(
     seed_.define("script-directory", &Shell::script_argument, this);
     seed_.define("path", &Shell::script_argument, this);
     seed_.define("exec", &Shell::exec, this);
-    seed_.define("help", &Shell::help, this);
-    seed_.define("?", &Shell::help, this);
+    seed_.define("help", seed::Program{&Shell::help, this, seed::ProgramDispatch::IdentityQuery});
+    seed_.define("?", seed::Program{&Shell::help, this, seed::ProgramDispatch::IdentityQuery});
+    seed_.define("inspect", seed::Program{&Shell::inspect, this, seed::ProgramDispatch::IdentityQuery});
     seed_.define("vocab", &Shell::vocabulary, this);
     processes_.opaque_values([this](seed::Ptr value) { return unity_.foreign(value) != nullptr || values_.structured(value); });
     processes_.stream_resolver([this](seed::Symbol* symbol) {
+        if(!prefer_script(symbol->text) && !ProcessHost::executable_path(symbol->text).empty())
+            return ProcessHost::StreamProgram{};
         auto path=find_script(symbol->text);if(path.empty())return ProcessHost::StreamProgram{};
 #ifdef _WIN32
         std::wstring executable(32768,L'\0');auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
@@ -100,6 +105,15 @@ Shell::Shell(
     }
 }
 
+bool Shell::prefer_script(std::string_view name) {
+    if(text_path(std::string(name)).extension()==".seed")return true;
+    // All-capital command identities prefer vocabulary; this is host lookup,
+    // not a SQL keyword list or a change to Seed's Symbol representation.
+    bool letter=false;
+    for(unsigned char c:name){if(c>='a' && c<='z')return false;if(c>='A' && c<='Z')letter=true;}
+    return letter;
+}
+
 std::filesystem::path Shell::find_script(const std::string& name, bool explicit_file) const {
     auto file = text_path(name);
     if (file.extension() != ".seed") {
@@ -110,6 +124,11 @@ std::filesystem::path Shell::find_script(const std::string& name, bool explicit_
     std::vector<std::filesystem::path> roots;
     if (!script_frames_.empty()) roots.push_back(script_frames_.back().path.parent_path());
     roots.push_back(std::filesystem::current_path());
+#ifdef _WIN32
+    std::wstring module(32768,L'\0');
+    auto count=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
+    if(count && count<module.size()){module.resize(count);roots.push_back(std::filesystem::path(module).parent_path()/L"Commands");}
+#endif
     auto system=shell_environment(L"SKUNK_SYSTEM");
     if(!system.empty())roots.push_back(text_path(system)/"Commands");
     if (!explicit_file && !file.has_parent_path()) {
@@ -131,11 +150,11 @@ std::filesystem::path Shell::find_script(const std::string& name, bool explicit_
 seed::Program Shell::resolve(seed::Runtime& r, seed::Symbol* symbol, seed::Ptr context) {
     auto& shell = *static_cast<Shell*>(context);
     if (r.binding(symbol)) return {};
-    // Native programs retain PATH priority; explicitly named .seed files bypass it.
-    if (text_path(symbol->text).extension() != ".seed")
-        if (auto program = ProcessHost::resolve(r, symbol, &shell.processes_)) return program;
+    if(!prefer_script(symbol->text))
+        if(auto native=ProcessHost::resolve(r,symbol,&shell.processes_))return native;
+    // Capitalization chooses vocabulary before implicit executable lookup.
     auto path = shell.find_script(symbol->text);
-    if (path.empty()) return {};
+    if (path.empty()) return ProcessHost::resolve(r, symbol, &shell.processes_);
     auto& program = shell.scripts_[symbol];
     if (!program) program = std::make_unique<ScriptProgram>();
     *program = {&shell, std::move(path)};
@@ -448,18 +467,15 @@ void Shell::interrupt() {
 }
 
 seed::Ptr Shell::evaluate(std::string_view source, bool display) {
+    auto previous_origin = seed_.binding_origin(), previous_source = seed_.binding_source();
+    seed_.binding_origin(script_frames_.empty() ? "session" : "Seed program",
+                         script_frames_.empty() ? std::string{} : path_text(script_frames_.back().path));
+    OnExit origin_scope{[&] { seed_.binding_origin(previous_origin, previous_source); }};
     auto before=interactive_session_ && script_frames_.empty()?seed_.capture_bindings():std::vector<seed::Cell>{};
     seed::Ptr form = seed_.read(source);
     if (seed_.is_symbol(form) && !seed_.binding(seed_.as_symbol(form)))
         form = seed_.arena().make_relation({form});
-    bool inspecting=false;
-    if(seed_.is_relation(form)) {
-        auto terms=seed_.terms(seed_.as_node(form));
-        inspecting=!terms.empty() && ((seed_.is_symbol(terms.front()) &&
-            (seed_.as_symbol(terms.front())->text=="?" || seed_.as_symbol(terms.front())->text=="help")) ||
-            (seed_.is_symbol(terms.back()) && seed_.as_symbol(terms.back())->text=="help"));
-    }
-    if(!inspecting)form = seed_.application(form);
+    form = seed_.application(form);
     bool managing_vocabulary = false;
     if(seed_.is_relation(form)) {
         auto terms=seed_.terms(seed_.as_node(form));
@@ -538,17 +554,22 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
     seed_.bind(seed_.intern("script-directory"),seed_.arena().make_literal(path_text(script_frames_.back().path.parent_path())));
     std::istringstream lines(source);
     std::string line, pending;
-    std::size_t number = 0, start = 1;
+    std::size_t number = 0, start = 1, consumed = 0;
     execution_status_ = 0;
     seed::Ptr result = seed_.arena().unit();
     bool first_form = true, previous_docstring = false;
     while (std::getline(lines, line)) {
         ++number;
+        consumed += line.size();
+        if (consumed < source.size() && source[consumed] == '\n') ++consumed;
         if (pending.empty()) start = number;
         pending += line;
         pending += '\n';
         if (!source_complete(pending)) continue;
         if (!source_has_form(pending)) { pending.clear(); continue; }
+        // Do not commit a complete physical line until the next semantic token
+        // is known. A leading | belongs to this expression, even across comments.
+        if (seed::Reader::source_leading_pipe(std::string_view(source).substr(consumed))) continue;
         try {
             if (host_.interrupted()) throw std::runtime_error("Seed program interrupted");
             if (!previous_docstring) present(result);

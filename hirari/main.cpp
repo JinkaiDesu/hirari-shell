@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
         if (args.empty()) return shell.run();
         if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h")) {
             host.write("Usage: hirari [--eval SOURCE | --file PATH [arguments]]\n"
-                       "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions, one per line; grouped expressions may span lines.\n");
+                       "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions; open groups and leading-pipe lines continue the current expression.\n");
             return 0;
         }
         if (args.size() < 2 || (args[0] != "--eval" && args[0] != "--file" && args[0] != "--stream-file") || (args[0] == "--eval" && args.size() != 2)) {

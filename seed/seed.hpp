@@ -46,11 +46,24 @@ struct Number {
     double real = 0;
 };
 
+// Definition-time descriptions, separate from the executable pointer product.
+// Snapshots share these immutable facts; help never has to extract a body.
+struct BindingMetadata {
+    std::string kind;
+    std::string docstring;
+    std::vector<std::string> parameters;
+    std::string alias;
+    std::string provider;
+    std::string origin;
+    std::string source_file;
+};
+
 struct Cell {
     Symbol* symbol = nullptr;
     Ptr head = nullptr;
 
     std::uint64_t revision = 0;
+    std::shared_ptr<const BindingMetadata> metadata;
 };
 
 enum class HostKind : std::uint8_t {
@@ -66,6 +79,17 @@ enum class HostKind : std::uint8_t {
 };
 
 class Runtime;
+
+#ifdef SEED_DEFERRED_EXPERIMENT
+// Available only in the separate experimental build, never the Program ABI.
+struct DeferredStats {
+    std::uint64_t attempts = 0;
+    std::uint64_t chains = 0;
+    std::uint64_t deferred_betas = 0;
+    std::uint64_t materializations = 0;
+    std::uint64_t inspection_barriers = 0;
+};
+#endif
 
 #ifdef SEED_PROFILE
 // Work counts are compiled only into the separate profiling benchmark.
@@ -108,9 +132,17 @@ using ProgramFn =
         Ptr context
     );
 
+enum class ProgramDispatch : std::uint8_t {
+    Ordinary,
+    // Explicit prefix/suffix identity request, before callable expansion.
+    // No ambient callback on unrelated products.
+    IdentityQuery
+};
+
 struct Program {
     ProgramFn invoke = nullptr;
     Ptr context = nullptr;
+    ProgramDispatch dispatch = ProgramDispatch::Ordinary;
 
     explicit operator bool() const noexcept {
         return invoke != nullptr;
@@ -142,6 +174,7 @@ using ResolverFn =
 class Arena {
 public:
     Arena();
+    std::size_t node_count() const noexcept { return nodes_.size(); }
 
 #ifdef SEED_PROFILE
     WorkProfile& profile() const noexcept { return profile_; }
@@ -266,6 +299,10 @@ public:
     // Shared by file execution and the interactive continuation prompt.
     static bool source_complete(std::string_view source);
     static bool source_has_form(std::string_view source);
+    // File-level lookahead: a leading pipe continues the preceding expression.
+    // Comments and blank lines are layout; || is a separate identity.
+    static bool source_leading_pipe(std::string_view source);
+    std::string documentation(std::string_view source);
 
 private:
     Runtime& runtime_;
@@ -290,6 +327,7 @@ private:
     Ptr read_form();
     Ptr read_group();
     Ptr read_literal();
+    std::string read_literal_bytes();
     Ptr read_symbol();
 
     std::string read_symbol_token();
@@ -362,10 +400,16 @@ private:
 
     Ptr reduce_once(
         Ptr form
+#ifdef SEED_DEFERRED_EXPERIMENT
+        , std::size_t& extra_steps, std::size_t remaining_steps
+#endif
     );
 
     Ptr reduce_relation(
         Node* relation
+#ifdef SEED_DEFERRED_EXPERIMENT
+        , std::size_t& extra_steps, std::size_t remaining_steps
+#endif
     );
 
     Program program_for(
@@ -382,7 +426,14 @@ private:
 
 class Runtime {
 public:
+#ifdef SEED_DEFERRED_EXPERIMENT
+    explicit Runtime(bool deferred_substitution = true);
+    bool deferred_substitution() const noexcept { return deferred_substitution_; }
+    void deferred_substitution(bool enabled) noexcept { deferred_substitution_ = enabled; }
+    DeferredStats& deferred_stats() noexcept { return deferred_stats_; }
+#else
     Runtime();
+#endif
     unsigned reduction_depth() const noexcept { return reduction_depth_; }
 
     Arena& arena() noexcept {
@@ -430,6 +481,7 @@ public:
     Program resolve_program(
         Symbol* symbol
     );
+    Program identity_query(Ptr form) const;
 
     // -------------------------------------------------------------------------
     // Language
@@ -438,6 +490,7 @@ public:
     Ptr read(
         std::string_view source
     );
+    std::string source_documentation(std::string_view source) { return reader_.documentation(source); }
 
     Ptr reduce(
         Ptr form
@@ -504,6 +557,11 @@ public:
         Symbol* symbol,
         Ptr value
     );
+    void binding_origin(std::string origin, std::string source_file = {}) {
+        binding_origin_ = std::move(origin); binding_source_ = std::move(source_file);
+    }
+    const std::string& binding_origin() const noexcept { return binding_origin_; }
+    const std::string& binding_source() const noexcept { return binding_source_; }
 
     Ptr binding(
         Symbol* symbol
@@ -566,6 +624,10 @@ public:
     ) const;
 
 private:
+#ifdef SEED_DEFERRED_EXPERIMENT
+    bool deferred_substitution_ = true;
+    DeferredStats deferred_stats_;
+#endif
     Arena arena_;
     Registry registry_;
     Reader reader_;
@@ -580,6 +642,8 @@ private:
     ResolverFn resolver_ = nullptr;
     unsigned reduction_depth_ = 0;
     Ptr resolver_context_ = nullptr;
+    std::string binding_origin_ = "runtime";
+    std::string binding_source_;
 };
 
 } // namespace seed

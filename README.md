@@ -1,9 +1,6 @@
-# Hirari
+# hirari
 
-Installed discovery, writable roots and the executable icon are documented in
-[installation](INSTALLATION.md).
-
-Hirari is an independently runnable Windows shell over the Seed evaluator.
+'hirari' is a Windows Shell running 'Seed, the language'.
 Seed owns values, identities, bindings, products and evaluation. Hirari owns
 program resolution, live process composition, foreground terminal programs and
 optional access to a running Skunkworks Unity player. Hirari starts and remains
@@ -11,7 +8,7 @@ useful without Unity or a world installed.
 
 ## Build and run
 
-Developer prerequisites are CMake and a Windows C++ toolchain supporting C++23
+Developer prerequisites are CMake 3.24 or newer and a Windows C++ toolchain supporting C++23
 and ConPTY. An installed shell uses its compiled executable; it does not need
 the development toolchain. MSVC builds use the static runtime: `/MT` for Release,
 `/MTd` for Debug. External programs resolve in the child environment's PATH order, including when a bundled tool has the same name as a Windows system program. Redirected child output retains its original bytes.
@@ -30,8 +27,8 @@ hirari>
 ```
 
 Use `hirari --eval SOURCE` for one expression or `hirari --file PATH` for a UTF-8
-script. A script contains one expression per completed line; grouped or quoted
-expressions may span lines. UTF-8 BOMs and Unicode paths are supported. Source
+script. Scripts contain successive expressions; open groups and leading-pipe
+lines continue the current expression. UTF-8 BOMs and Unicode paths are supported. Source
 errors report the file and line, stop execution and return nonzero. Seed supports
 `#` line comments and `#[bracket comments]`, including nested bracket comments.
 Foreground interactive tools use the interactive shell.
@@ -43,29 +40,33 @@ These are different values and operations:
 | Form | Meaning |
 | --- | --- |
 | `foo` | Resolve a symbol/binding or a host program. |
-| `:foo` | Name: semantic identity of foo. |
+| `-foo` | Name: semantic identity of foo. |
 | `"foo"` | Literal text. |
 | `()` | Empty value. |
+| `a b`, `a(b)`, `b \| a` | The same application, in three orientations. |
+| `a () b`, `b : a` | The separate abstraction/capture mirror. |
 | `greeting := "hello"` | Bind the RHS form to greeting. |
 | `"hello" = greeting` | The same binding, with the expression first. |
 
-Names are not converted to literals in the evaluator. Native `:=` and inverse
+Names use `-name`; attached `:name` is no longer Name syntax. Colon constructs
+abstractions regardless of adjacent spaces. Names are not converted to literals
+in the evaluator. Native `:=` and inverse
 `=` retain the expression form; they do not memoize a foreign allocation. The
 binding statement reduces its returned expression, and demanding a symbol
 reduces its current binding. The existing Program ABI carries an implementation
 and opaque host context without adding evaluator value kinds.
 
 **Syntax migration:** old `name = expression` scripts must use `name := expression`
-or `expression = name`. There is no heuristic compatibility mode. TOML `=` is
+or `expression = name`; old `:name` identities become `-name`. There is no heuristic compatibility mode. TOML `=` is
 unchanged. See [Seed operator contract](SEED_OPERATORS.md) for grouping and identities.
 
 ```text
 greeting := "hello"
 greeting
-if :true "yes" "no"
-if :false "yes" "no"
+if -true "yes" "no"
+if -false "yes" "no"
 item := "previous"
-for :item :("alpha" "beta") item
+for -item -("alpha" "beta") item
 item
 ```
 
@@ -102,15 +103,15 @@ wire-value helpers. There is no intermediate Runtime executable.
 Use **explicit capture** for a reusable foreign value:
 
 ```text
-unity bind :t (unity type "UnityEngine.GameObject")
-unity bind :go (unity new t "GenericProof")
+unity bind -t (unity type "UnityEngine.GameObject")
+unity bind -go (unity new t "GenericProof")
 unity set go "name" "RenamedProof"
 unity get go "name"
-unity call go "SetActive" :false
+unity call go "SetActive" -false
 unity release go
 ```
 
-`unity bind :destination expression` evaluates the expression once and binds
+`unity bind -destination expression` evaluates the expression once and binds
 the returned value. In contrast, `go := unity new t "GenericProof"` keeps the
 ordinary lazy Seed form and runs New again each time go is demanded.
 Object/type references have typed, opaque host payloads and Name identities;
@@ -159,11 +160,13 @@ Unity server reflection continues to run through the player's main-thread queue.
 
 ## Current regression suite
 
-CTest registers five targets:
+CTest registers seven production targets:
 
 | Test | Coverage |
 | --- | --- |
 | `seed_semantics` | Reader/printer round trips; application and capture mirrors; binding orientation, lazy effects and stable cells; provider demand; comments and continuation. |
+| `hirari_capabilities` | Linked PCRE2, structured predicate snapshots, inert provider identities, registration and non-executing help. |
+| `hirari_shell_completion` | Foreground shell lifecycle, interruption and completion behavior. |
 | `hirari_integration` | Wire golden bytes and all value kinds; partial I/O; persistent Hello/Ready; IDs and frame bounds; faults, disconnect, timeout and no replay; typed/opaque refs, capture identity, release, session guards, CLR signatures and batches; neutral world/script validation and rollback; child environment; Unicode argv/files; control forms; live pipes; exit/quit. |
 | `hirari_eval_name` | CLI preserves a Name. |
 | `hirari_eval_failure` | Missing program returns nonzero. |
@@ -177,6 +180,10 @@ assertions; production process output remains unchanged. These tests do not
 claim actual Unity-player, bundled-tool or clean-machine installer acceptance;
 those are Skunkworks package tests.
 
-Release verification on 2026-10-04: all five CTest targets passed. The executable
-dependency inspection listed `KERNEL32.dll` only. Re-run CTest for each release;
-this result is a source-state checkpoint, not a replacement for release checks.
+Re-run CTest for each release. `SEED_DEFERRED_EXPERIMENT=ON` adds isolated
+experimental executables and three differential tests; it stays off in the
+production shell. PCRE2 is statically linked from a version/hash lock, and its
+source archive and notices are retained by release packaging. See
+[capabilities](CAPABILITIES.md) for regex, provider dispatch and query boundaries.
+
+Installed discovery, writable roots and the executable icon: [installation](INSTALLATION.md).

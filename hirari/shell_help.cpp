@@ -13,8 +13,9 @@ std::string identity(seed::Runtime& r,seed::Ptr p) {
     throw std::runtime_error("expected a binding or command identity");
 }
 const std::map<std::string,std::string> documentation{
-    {"help","help [SUBJECT] | SUBJECT help | ? SUBJECT\nInspect definitions, command origins or retained CLR members without executing the subject."},
-    {"?","? SUBJECT\nReflective help. SUBJECT help is the same inspection. Attached form? requests the form's produced answer and does not invoke help."},
+    {"help","help [-IDENTITY] | IDENTITY help | ? -IDENTITY\nRead descriptions, arguments, origins and binding revisions. No subject execution, body extraction or Unity requests. Use inspect -IDENTITY for executable structure."},
+    {"?","? -IDENTITY\nRead semantic metadata. IDENTITY help is the same request. Attached form? requests the form's produced answer and does not invoke help."},
+    {"inspect","inspect -IDENTITY\nExplicitly inspect retained executable structure or live CLR members. The subject is not evaluated. Unlike help, this may extract bodies or request Unity reflection metadata."},
     {"demand","demand SUBJECT | SUBJECT?\nEvaluate the subject through its provider. A bare callable runs with no arguments. The answer retains its value type and identity; it is not automatically Boolean."},
     {":=","NAME := EXPRESSION\nBind a retained, lazy program form. EXPRESSION = NAME is its inverse orientation."},
     {"=","EXPRESSION = NAME\nInverse binding. Equivalent to NAME := EXPRESSION."},
@@ -41,8 +42,9 @@ const std::map<std::string,std::string> documentation{
     {"path","path \"ROOT\" \"SEGMENT\" ...\nJoin filesystem paths without rewriting arbitrary program arguments."},
     {"apply","apply -PROGRAM -(ARGUMENTS ...)\nInvoke a reified program with a structured argument product. apply -(exec \"program\") (args) forwards script arguments."},
     {"exec","exec \"PROGRAM PATH\" [ARGUMENTS ...]\nLaunch an executable with argument values. No shell-text reparsing."},
-    {"provide","provide \"EXECUTABLE\" [STRUCTURED ARGUMENTS ...]\nInvoke a program using hirari.values/1. Results retain records, lists, types, Names and Unit. Provider records are inert data; live CLR identities cannot cross this boundary."},
-    {"data","data bind -NAME VALUE | get RECORD \"FIELD\" | at LIST INDEX | size VALUE | kind VALUE | read \"FILE\" | integer ANSWER | real ANSWER | json VALUE | text VALUE | print VALUES...\nRetain and inspect typed data. integer/real explicitly decode native text; read restores one value envelope; kind reports physical representation. bind evaluates once; ordinary := retains a program form."},
+    {"provide","provide -CAPABILITY [ARGUMENTS ...] | provide \"EXECUTABLE\" [ARGUMENTS ...]\nInvoke a linked library or external program through the same typed argument contract. Provider results remain inert data; live CLR identities cannot cross process boundaries."},
+    {"capability","capability list | register -IDENTITY \"EXECUTABLE\" [\"DESCRIPTION\"]\nDiscover linked/process providers or register an external provider identity. Registration and help do not execute the provider."},
+    {"data","data bind -NAME VALUE | get RECORD \"FIELD\" | at LIST INDEX | size VALUE | kind VALUE | form VALUE | read \"FILE\" | integer ANSWER | real ANSWER | json VALUE | text VALUE | print VALUES...\nRetain and inspect typed data. form snapshots a value's structure and captured bindings for providers; abstraction bodies stay inert. integer/real explicitly decode native text; read restores one value envelope; kind reports physical representation. bind evaluates once; ordinary := retains a program form."},
     {"cd","cd [\"PATH\"]\nChange the filesystem working directory. Without an argument, use the user profile."},
     {"pwd","pwd\nShow the filesystem working directory."},
     {"exit","exit\nEnd Hirari. Skunkworks and authored Unity objects remain alive."},
@@ -53,9 +55,96 @@ const std::map<std::string,std::string> documentation{
 };
 }
 seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
+    auto first = relation;
+    bool prefix = r.is_symbol(first->head) &&
+        (r.as_symbol(first->head)->text == "help" || r.as_symbol(first->head)->text == "?");
+    auto second = static_cast<seed::Node*>(first->ref);
+    auto& shell = *static_cast<Shell*>(context);
+    auto finish = [&](std::string text) {
+        auto value = r.arena().make_literal(text); shell.descriptions_.insert(value);
+        return static_cast<seed::Ptr>(value);
+    };
+    if (!second && prefix) {
+        std::ostringstream out; out << "Hirari: programs, values and live capabilities\n";
+        for (const auto& [name, text] : documentation) out << name << "  ";
+        out << "\nUse help -COMMAND. Use inspect -COMMAND for deeper structure.\n";
+        return finish(out.str());
+    }
+    if (!second || second->ref)
+        throw std::runtime_error("help expects one identity; use help -NAME or inspect -NAME");
+    seed::Ptr subject = prefix ? second->head : first->head;
+    if (r.is_name(subject)) subject = r.as_name(subject)->target;
+    if (r.is_cell(subject)) subject = r.as_cell(subject)->symbol;
+    if (!r.is_symbol(subject))
+        throw std::runtime_error("help expects an identity, not an expression; use inspect for structure");
+    auto symbol = r.as_symbol(subject);
+    std::ostringstream out; out << symbol->text << '\n';
+    std::unordered_set<seed::Symbol*> seen;
+    for (unsigned depth = 0; depth < 64; ++depth) {
+        if (!seen.insert(symbol).second) { out << "cyclic identity alias\n"; break; }
+        auto known = documentation.find(symbol->text);
+        if (known != documentation.end()) { out << known->second << '\n'; break; }
+        if(auto description=shell.values_.description(symbol->text);!description.empty()){out<<description<<'\n';break;}
+        if (auto cell = r.find_cell(symbol); cell && cell->metadata) {
+            const auto& metadata = *cell->metadata;
+            if (!metadata.docstring.empty()) out << metadata.docstring << '\n';
+            if (metadata.kind == "abstraction") {
+                out << "arguments:";
+                for (const auto& parameter : metadata.parameters) out << ' ' << parameter;
+                out << '\n';
+            }
+            out << "binding revision " << cell->revision << ": " << symbol->text
+                << " := <" << metadata.kind << ">\n";
+            out << "origin: " << metadata.origin << '\n';
+            if (!metadata.source_file.empty()) out << "source: " << metadata.source_file << '\n';
+            if (!metadata.provider.empty()) out << "consumer identity: " << metadata.provider << '\n';
+            if (shell.vocabulary_) {
+                auto annotation = shell.vocabulary_->annotation(symbol->text);
+                if (!annotation.empty()) out << annotation << '\n';
+            }
+            if (!metadata.alias.empty()) {
+                out << "alias of: " << metadata.alias << '\n';
+                symbol = r.intern(metadata.alias); continue;
+            }
+            out << "Use inspect -" << symbol->text << " for executable structure.\n";
+            break;
+        }
+        auto executable = ProcessHost::executable_path(symbol->text);
+        if(!Shell::prefer_script(symbol->text) && !executable.empty()) {
+            out << "native executable: " << executable << "\nNative --help is invoked explicitly.\n";
+            break;
+        }
+        auto path = shell.find_script(symbol->text);
+        if (!path.empty()) {
+            const auto source = read_source(path);
+            out << "Seed program: " << path_text(path) << '\n';
+            const auto doc = r.source_documentation(source);
+            if (!doc.empty()) out << doc << '\n';
+            else {
+                std::istringstream lines(source); std::string line;
+                for (unsigned count = 0; count < 40 && std::getline(lines, line); ++count) {
+                    auto begin = line.find_first_not_of(" \t\r");
+                    if (begin == std::string::npos) continue;
+                    if (line[begin] != '#') break;
+                    if (line.compare(begin, 2, "#!") != 0) out << line.substr(begin) << '\n';
+                }
+            }
+            break;
+        }
+        if (!executable.empty()) {
+            out << "native executable: " << executable << "\nNative --help is invoked explicitly.\n";
+            break;
+        }
+        out << "unresolved identity; define it or place a program on HIRARI_PATH/PATH\n";
+        break;
+    }
+    return finish(out.str());
+}
+
+seed::Ptr Shell::inspect(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
     auto terms=r.terms(relation);if(terms.empty())return relation;
-    bool prefix=r.is_symbol(terms.front()) && (r.as_symbol(terms.front())->text=="help" || r.as_symbol(terms.front())->text=="?");
-    bool suffix=terms.size()>1 && r.is_symbol(terms.back()) && r.as_symbol(terms.back())->text=="help";
+    bool prefix=r.is_symbol(terms.front()) && r.as_symbol(terms.front())->text=="inspect";
+    bool suffix=terms.size()>1 && r.is_symbol(terms.back()) && r.as_symbol(terms.back())->text=="inspect";
     if(!prefix && !suffix)return relation;
     auto& shell=*static_cast<Shell*>(context);
     auto finish=[&](std::string text){auto value=r.arena().make_literal(text);shell.descriptions_.insert(value);return static_cast<seed::Ptr>(value);};
@@ -86,10 +175,11 @@ seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
         if(found!=documentation.end()){out<<found->second<<'\n';break;}
         if(auto cell=r.find_cell(symbol);cell && cell->head){
             out<<"binding revision "<<cell->revision<<": "<<symbol->text<<" := "<<r.print(cell->head)<<'\n';
+            if(cell->metadata){out<<"origin: "<<cell->metadata->origin<<'\n';if(!cell->metadata->source_file.empty())out<<"source: "<<cell->metadata->source_file<<'\n';}
             if(shell.vocabulary_)out<<shell.vocabulary_->annotation(symbol->text)<<'\n';subject=cell->head;continue;
         }
         auto executable=ProcessHost::executable_path(symbol->text);
-        if(!executable.empty()){out<<"native executable: "<<executable<<"\nUse exec \""<<executable<<"\" \"--help\" for its own documentation.\n";break;}
+        if(!Shell::prefer_script(symbol->text) && !executable.empty()){out<<"native executable: "<<executable<<"\nUse exec \""<<executable<<"\" \"--help\" for its own documentation.\n";break;}
         auto path=shell.find_script(symbol->text);
         if(!path.empty()){
             auto source=read_source(path);auto form=r.read(source);
@@ -97,8 +187,9 @@ seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
             out<<"Seed program: "<<path_text(path)<<'\n';
             if(r.is_literal(first))out<<r.as_literal(first)->bytes<<'\n';
             std::istringstream lines(source);std::string line;unsigned count=0;
-            while(count++<40 && std::getline(lines,line)){auto first=line.find_first_not_of(" \t\r");if(first==std::string::npos)continue;if(line[first]!='#')break;out<<line.substr(first)<<'\n';}break;
+            while(count++<40 && std::getline(lines,line)){auto comment=line.find_first_not_of(" \t\r");if(comment==std::string::npos)continue;if(line[comment]!='#')break;out<<line.substr(comment)<<'\n';}break;
         }
+        if(!executable.empty()){out<<"native executable: "<<executable<<"\nUse exec \""<<executable<<"\" \"--help\" for its own documentation.\n";break;}
         out<<"unresolved identity; define it or place a program on HIRARI_PATH/PATH\n";break;
     }
     return finish(out.str());

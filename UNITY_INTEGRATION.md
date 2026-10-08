@@ -29,7 +29,7 @@ Bytes containing a packed message body without the frame length prefix.
 ## Scripts
 
 ```powershell
-hirari --eval ':foo'
+hirari --eval '-foo'
 hirari --file 'path with spaces/start.seed'
 ```
 
@@ -64,20 +64,20 @@ Seed `NAME := FORM` and `FORM = NAME` retain the same lazy program form. In part
 Use the **explicit host capture** operation for a retained capability value:
 
 ```text
-unity bind :t (unity type "UnityEngine.GameObject")
-unity bind :go (unity new t "GenericProof")
+unity bind -t (unity type "UnityEngine.GameObject")
+unity bind -go (unity new t "GenericProof")
 unity get go "name"
 unity set go "name" "RenamedProof"
 unity get go "name"
-unity call go "SetActive" :false
-unity bind :transformType (unity type "UnityEngine.Transform")
-unity bind :transform (unity component go transformType)
+unity call go "SetActive" -false
+unity bind -transformType (unity type "UnityEngine.Transform")
+unity bind -transform (unity component go transformType)
 unity find "RenamedProof"
 unity release transform
 unity release go
 ```
 
-`unity bind :destination expression` requires a Name of a symbol, reduces the
+`unity bind -destination expression` requires a Name of a symbol, reduces the
 expression once, binds that evaluated identity/value, and returns it. Native
 `=` is not replaced. Object/type references use immutable Name identities with
 typed payloads owned by host Program contexts. They are not ordinary strings or
@@ -92,7 +92,7 @@ Supported primitives are `find`, `type`, `component`, `get`, `set`, `call`,
 Component gets an existing component; AddComponent is an ordinary CLR call.
 Unity executes these operations through its own main-thread queue.
 
-Quoted literals stay String values. `:true` and `:false` encode Boolean; `()`
+Quoted literals stay String values. `-true` and `-false` encode Boolean; `()`
 encodes Null. Unbound numeric tokens encode Int32/Int64 or Double. Arbitrary
 Names are rejected as text. Returned numbers retain their wire kind and exact
 value in opaque host payloads. Skunkworks retains returned CLR arrays, including
@@ -100,11 +100,11 @@ value in opaque host payloads. Skunkworks retains returned CLR arrays, including
 into a response. Explicit constructors are:
 
 ```text
-unity bind :count (unity i32 "12")
-unity bind :large (unity i64 "9223372036854775807")
-unity bind :weight (unity f32 "1.25")
-unity bind :precise (unity f64 "1.25")
-unity bind :payload (unity bytes "00ff01")
+unity bind -count (unity i32 "12")
+unity bind -large (unity i64 "9223372036854775807")
+unity bind -weight (unity f32 "1.25")
+unity bind -precise (unity f64 "1.25")
+unity bind -payload (unity bytes "00ff01")
 unity string "literal text"
 ```
 
@@ -116,8 +116,8 @@ an opaque CLR reference: capture it once with `unity bind`, then reuse it direct
 in subsequent CLR calls, including within a batch. For example:
 
 ```text
-unity bind :fileType (unity type "System.IO.File")
-unity bind :payload (unity call fileType "ReadAllBytes" "artifact.bin")
+unity bind -fileType (unity type "System.IO.File")
+unity bind -payload (unity call fileType "ReadAllBytes" "artifact.bin")
 unity get payload "Length"
 unity call fileType "WriteAllBytes" "copy.bin" payload
 unity release payload
@@ -132,38 +132,38 @@ or wire tags, and does not add automatic disposal, client leases or bulk export.
 ## Explicit CLR signatures and generic methods
 
 ```text
-unity bind :stringType (unity type "System.String")
-unity bind :boolType (unity type "System.Boolean")
-unity bind :go (unity new-exact t :(stringType) "GenericProof")
-unity call-exact go "SetActive" :(boolType) :true
+unity bind -stringType (unity type "System.String")
+unity bind -boolType (unity type "System.Boolean")
+unity bind -go (unity new-exact t -(stringType) "GenericProof")
+unity call-exact go "SetActive" -(boolType) -true
 ```
 
-`new-exact TYPE :(SIGNATURE_TYPES) ARGUMENTS...` supplies the exact constructor
-signature. `call-exact TARGET "METHOD" :(SIGNATURE_TYPES) ARGUMENTS...` does the
-same for a method. `:()` is an exact empty signature. Signature count must match
+`new-exact TYPE -(SIGNATURE_TYPES) ARGUMENTS...` supplies the exact constructor
+signature. `call-exact TARGET "METHOD" -(SIGNATURE_TYPES) ARGUMENTS...` does the
+same for a method. `-()` is an exact empty signature. Signature count must match
 argument count. Ordinary New/Call use inferred overload resolution.
 
-Generic methods use `call-generic TARGET "METHOD" :(GENERIC_TYPES) ARGUMENTS...`
-or `call-generic-exact TARGET "METHOD" :(GENERIC_TYPES) :(SIGNATURE_TYPES)
+Generic methods use `call-generic TARGET "METHOD" -(GENERIC_TYPES) ARGUMENTS...`
+or `call-generic-exact TARGET "METHOD" -(GENERIC_TYPES) -(SIGNATURE_TYPES)
 ARGUMENTS...`. Lists are reified Seed products, not a second language.
 
 Managed assembly loading uses the existing reflection primitive:
 
 ```text
-unity bind :assemblyType (unity type "System.Reflection.Assembly")
-unity bind :assembly (unity call assemblyType "LoadFrom" "absolute/path/Extension.dll")
+unity bind -assemblyType (unity type "System.Reflection.Assembly")
+unity bind -assembly (unity call assemblyType "LoadFrom" "absolute/path/Extension.dll")
 ```
 
 ## Batches
 
 ```text
-unity bind :results (unity batch :(
+unity bind -results (unity batch -(
     (type "UnityEngine.GameObject")
     (new (unity batch-ref 0) "GenericProof")
     (get (unity batch-ref 1) "name")
 ))
 unity at results 2
-unity bind :go (unity at results 1)
+unity bind -go (unity at results 1)
 ```
 
 Batch-ref indices refer to the primary result of an earlier operation.
@@ -264,7 +264,7 @@ recent := git "log"
 recent "--oneline"
 ? recent
 recent help
-apply :(exec "program.exe" "fixed argument") (args)
+apply -(exec "program.exe" "fixed argument") (args)
 ```
 
 Callable heads expand retained structure and append arguments without reparsing
@@ -272,13 +272,14 @@ text. Alias cycles/depth are bounded. Names, text and Unit stay distinct in
 same-evaluator script calls. `apply` invokes a reified program with a reified
 argument product; it is also useful for forwarding a command file's `args`.
 
-In Hirari, `? SUBJECT`, `SUBJECT help` and `help SUBJECT` inspect the subject
-without invoking it. Builtins expose usage, aliases expose definitions and
-revisions, files expose their origin and leading comments, and retained CLR
-objects expose public member metadata without executing getters. Native command
+In Hirari, `? -IDENTITY`, `IDENTITY help` and `help -IDENTITY` describe the
+identity without evaluating it, extracting its executable body or contacting
+Unity. Builtins expose usage, bindings expose documentation and revisions, and
+files expose their origin and leading documentation. Use `inspect -IDENTITY`
+for retained structure or live CLR member metadata without executing getters. Native command
 documentation is invoked explicitly with `exec "path" "--help"` or a quoted
-`"help"` argument. `demand SUBJECT` preserves explicit Seed evaluation. Pure
-Seed retains its demand primitive; Hirari supplies reflective help above it.
+`"help"` argument. `demand SUBJECT` or attached `SUBJECT?` explicitly evaluates
+the subject. Standalone `?` belongs to shell help.
 `unity help TARGET ["MEMBER" OFFSET COUNT]` paginates CLR metadata.
 
 ## Persistence and lifetimes
@@ -291,10 +292,10 @@ restoring/reloading does not add a second automatic revision. `source` can expor
 definitions into the interactive caller.
 
 ```text
-vocab save :recent "Show repository history"
-vocab history :recent
-vocab restore :recent 1
-vocab forget :recent
+vocab save -recent "Show repository history"
+vocab history -recent
+vocab restore -recent 1
+vocab forget -recent
 vocab use "world-local vocabulary"
 ```
 

@@ -12,10 +12,18 @@ class Values {
 public:
     Values(seed::Runtime&, ProcessHost&, Host&, std::function<bool(seed::Ptr)>);
     bool structured(seed::Ptr) const;
+    // Linked and external capabilities share the same typed argument contract.
+    using LinkedProvider = std::function<Json(const std::vector<Json>&)>;
+    void link(std::string identity, std::string description, LinkedProvider);
+    std::string description(std::string_view identity) const;
 private:
     static seed::Ptr provide(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr data(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr route(seed::Runtime&, seed::Node*, seed::Ptr);
+    static seed::Ptr capability(seed::Runtime&, seed::Node*, seed::Ptr);
+    struct Provider { std::string description, executable; LinkedProvider invoke; };
+    std::unordered_map<std::string, Provider> providers_;
+    Json form(seed::Ptr, std::vector<seed::Ptr> bound = {}, std::vector<seed::Ptr> expanding = {}, unsigned depth=0);
     Json encode(seed::Ptr, unsigned depth=0);
     seed::Ptr decode(const Json&, unsigned depth=0);
     seed::Ptr record_get(seed::Ptr, std::string_view);
