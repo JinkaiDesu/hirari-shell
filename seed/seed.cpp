@@ -1,4 +1,5 @@
 #include "seed/seed.hpp"
+#include "seed/native_stack.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -418,7 +419,7 @@ Ptr program_apply(Runtime& runtime, Node* relation, Ptr) {
     auto forms=runtime.is_relation(head) && !runtime.is_abstraction(head)
         ? runtime.terms(runtime.as_node(head)) : std::vector<Ptr>{head};
     if(!runtime.is_unit(tail)) {
-        auto values=runtime.is_relation(tail)?runtime.terms(runtime.as_node(tail)):std::vector<Ptr>{tail};
+        auto values=runtime.collection(arguments,true);
         forms.insert(forms.end(),values.begin(),values.end());
     }
     return runtime.arena().make_relation(forms);
@@ -744,14 +745,7 @@ Ptr program_for(Runtime& runtime, Node* relation, Ptr) {
         throw std::runtime_error("for expects a binding identity, finite domain, and body");
     Symbol* variable = symbol_from_identity(runtime, terms[1]);
     if (!variable) throw std::runtime_error("for binding must be a Symbol or Name");
-    Ptr domain = runtime.reduce(terms[2]);
-    if (runtime.is_name(domain)) {
-        Ptr target = runtime.as_name(domain)->target;
-        if (runtime.is_relation(target) || runtime.is_unit(target)) domain = target;
-    }
-    std::vector<Ptr> elements;
-    if (runtime.is_relation(domain)) elements = runtime.terms(runtime.as_node(domain));
-    else if (!runtime.is_unit(domain)) elements.push_back(domain);
+    auto elements = runtime.collection(runtime.reduce(terms[2]));
     Cell* cell = runtime.ensure_cell(variable);
     Ptr previous = runtime.head(cell);
     struct BindingGuard {
@@ -1064,6 +1058,16 @@ void Registry::define(
         program;
 }
 
+void Registry::describe(Symbol* symbol, std::string text) {
+    if (!symbol) throw std::invalid_argument("describe requires a symbol");
+    descriptions_[symbol] = std::move(text);
+}
+
+std::string_view Registry::description(Symbol* symbol) const {
+    auto it = descriptions_.find(symbol);
+    return it == descriptions_.end() ? std::string_view{} : std::string_view{it->second};
+}
+
 Program Registry::find(
     Symbol* symbol
 ) const {
@@ -1159,8 +1163,8 @@ bool Reader::source_complete(std::string_view source) {
                 }
             }
             if (!closed) return false;
-        } else if (c == '(') ++depth;
-        else if (c == ')' && --depth < 0) return true; // Reader diagnoses invalid input.
+        } else if (c == '(' || c == '{') ++depth;
+        else if ((c == ')' || c == '}') && --depth < 0) return true; // Reader diagnoses invalid input.
     }
     return depth == 0;
 }
@@ -1233,16 +1237,18 @@ Ptr Reader::read_form() {
 
     Ptr form;
     if ((peek() == '@' || peek() == '*') && peek(1) != '\0' &&
-        !std::isspace(static_cast<unsigned char>(peek(1))) && peek(1) != ')' &&
+        !std::isspace(static_cast<unsigned char>(peek(1))) && peek(1) != ')' && peek(1) != '}' &&
         peek(1) != '#' && peek(1) != '?' && continuation_width(source_, pos_ + 1) == 0) {
         auto prefix = std::string(1, take());
         form = runtime_.product({runtime_.intern(prefix), read_form()});
     } else if (peek() == '(') {
         form = read_group();
-    } else if (peek() == '-' && (peek(1) == '(' ||
+    } else if (peek() == '{') {
+        form = read_pipeline();
+    } else if (peek() == '-' && (peek(1) == '(' || peek(1) == '{' ||
         std::isalpha(static_cast<unsigned char>(peek(1))) ||
         static_cast<unsigned char>(peek(1)) >= 128 || peek(1) == '_')) {
-        bool grouped = peek(1) == '(';
+        bool grouped = peek(1) == '(' || peek(1) == '{';
         take();
         Ptr target = read_form();
         if (!grouped && runtime_.is_symbol(target)) target = named_operation(runtime_, runtime_.as_symbol(target)->text);
@@ -1291,6 +1297,30 @@ Ptr Reader::read_group() {
     }
 
     return inside;
+}
+
+// `{ forms }` lowers to ({} (forms)): a reserved head over a nested body, so
+// the body's | never orients the enclosing relation and no new host kind is
+// needed. Once { is a delimiter, source cannot spell the symbol {} itself.
+Ptr Reader::read_pipeline() {
+    take();
+    skip_space();
+    Ptr body;
+    if (peek() == '}') {
+        take();
+        body = runtime_.arena().unit();
+    } else {
+        std::vector<Ptr> forms;
+        while (true) {
+            skip_space();
+            if (eof()) throw std::runtime_error("unterminated pipeline context: expected '}'");
+            if (peek() == '}') { take(); break; }
+            if (peek() == ')') throw std::runtime_error("expected '}' before ')'");
+            forms.push_back(read_form());
+        }
+        body = runtime_.arena().make_relation(forms);
+    }
+    return runtime_.arena().make_relation({runtime_.intern("{}"), body});
 }
 
 Ptr Reader::read_literal() {
@@ -1399,6 +1429,8 @@ std::string Reader::read_symbol_token() {
             ) ||
             c == '(' ||
             c == ')' ||
+            c == '{' ||
+            c == '}' ||
             c == '"' ||
             c == ':' || c == '#' || c == '|' || c == '<' || c == '>' || c == '=' ||
             continuation_width(source_, pos_) != 0 ||
@@ -1549,6 +1581,8 @@ std::string Printer::native_form(
         }
 
         case HostKind::Node:
+            if (Ptr body = runtime_.pipeline_body(form))
+                return runtime_.is_unit(body) ? "{}" : "{ " + native_relation(static_cast<Node*>(body)) + " }";
             return
                 native_relation(
                     static_cast<Node*>(form)
@@ -1595,7 +1629,10 @@ std::string Printer::native_relation(
             out += ' ';
         }
 
-        if (
+        if (runtime_.pipeline_body(form)) {
+            out += native_form(form);
+        }
+        else if (
             runtime_.is_relation(form)
         ) {
             out += '(';
@@ -1692,6 +1729,7 @@ std::string Printer::structural_member(
         }
 
         case HostKind::Node:
+            if (runtime_.pipeline_body(form)) return "(" + structural_form(form) + ")";
             return "(" +
                 structural_relation(
                     static_cast<Node*>(
@@ -1713,6 +1751,15 @@ std::string Printer::structural_form(
         runtime_.is_unit(form)
     ) {
         return "()";
+    }
+
+    if (Ptr body = runtime_.pipeline_body(form)) {
+        if (runtime_.is_unit(body)) return "{}";
+        std::string out = "{";
+        for (Node* current = static_cast<Node*>(body); current;
+             current = current->ref ? static_cast<Node*>(current->ref) : nullptr)
+            out += structural_member(current->head);
+        return out + "}";
     }
 
     if (
@@ -1952,6 +1999,17 @@ Ptr Runtime::compose(Ptr consumer, Ptr producer) {
     return product(std::move(forms));
 }
 
+std::vector<Ptr> Runtime::collection(Ptr value, bool unquote_atom) {
+    std::vector<Ptr> out;
+    if (collection_resolver_ && collection_resolver_(*this, value, out, collection_context_)) return out;
+    if (is_name(value)) {
+        Ptr target = as_name(value)->target;
+        if (unquote_atom || is_relation(target) || is_unit(target)) value = target;
+    }
+    if (is_unit(value)) return {};
+    return is_relation(value) ? terms(as_node(value)) : std::vector<Ptr>{value};
+}
+
 Ptr Runtime::flow(Node* relation, std::vector<Ptr>& stages) {
     stages.clear();
     std::vector<Ptr> segment;
@@ -1997,6 +2055,9 @@ Runtime::Runtime()
     define("for", &program_for);
     define(":=", &program_bind);
     define("|", &program_flow);
+    describe("|", "PRODUCER | CONSUMER\nReverse application: b | a == a b == a(b). The relation is "
+             "oriented and reduced as ordinary Seed application; a native consumer receives the "
+             "producer's completed answer. Live OS pipes are written explicitly as { b | a }.");
 
     define(
         "=",
@@ -2031,6 +2092,19 @@ void Runtime::define(
             context
         }
     );
+}
+
+void Runtime::describe(std::string_view symbol, std::string text) {
+    registry_.describe(intern(symbol), std::move(text));
+}
+
+Ptr Runtime::pipeline_body(Ptr form) const {
+    if (!is_relation(form)) return nullptr;
+    auto first = as_node(form);
+    if (!is_symbol_text(*this, first->head, "{}")) return nullptr;
+    auto body = next_term(first);
+    if (!body || body->ref) return nullptr;
+    return is_relation(body->head) || is_unit(body->head) ? body->head : nullptr;
 }
 
 void Runtime::define(
@@ -2080,6 +2154,13 @@ Ptr Runtime::read(
 Ptr Runtime::reduce(
     Ptr form
 ) {
+    // Host safety boundary, not a reduction rule: refuse one more nested
+    // reduction when the native stack is nearly exhausted, instead of letting
+    // uncontrolled recursion crash the process. Terminating reductions within
+    // the stack reservation are unaffected.
+    if (native_stack_low(256 * 1024))
+        throw std::runtime_error("Seed evaluation nested too deeply for the native stack (reduction depth " +
+                                 std::to_string(reduction_depth_) + "); repeat with while or for instead of recursion");
     ++reduction_depth_;
     struct Depth { unsigned& value; ~Depth() { --value; } } scope{reduction_depth_};
     return

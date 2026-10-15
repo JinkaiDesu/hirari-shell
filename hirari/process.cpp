@@ -586,11 +586,10 @@ ProcessHost::ProcessHost(
     runtime.define("pwd", &ProcessHost::directory, this);
     runtime.define("exit", &ProcessHost::quit, this);
     runtime.define("quit", &ProcessHost::quit, this);
-    runtime.define(
-        "|",
-        &ProcessHost::pipe,
-        this
-    );
+    // Outside braces | remains Seed's reverse application. OS pipes exist only
+    // in the explicit `{ }` context, which the reader lowers to ({} BODY).
+    runtime.define("{}", &ProcessHost::pipeline, this);
+    runtime.describe("{}", "{ PRODUCER | CONSUMER ... }\nPOSIX pipeline context. Inside braces | is a real OS pipe: every stage is a native process (a PATH executable or exec \"path\" ...), all stages run concurrently, and PRODUCER.stdout streams into CONSUMER.stdin with ordinary backpressure. Seed callables and .seed scripts are not stages. At top level output streams to the terminal; CONSUMER {PIPELINE} feeds a native consumer live. The answer is -stdout -stderr -status, plus -stages with each stage status. Outside braces | is ordinary reverse application: b | a == a b == a(b).");
 }
 
 ProcessHost::~ProcessHost() { conpty_.reset(); }
@@ -622,9 +621,20 @@ seed::Ptr ProcessHost::quit(seed::Runtime& runtime, seed::Node* relation, seed::
     if (!runtime.is_symbol(terms.front())) return relation;
     const auto& head = runtime.as_symbol(terms.front())->text;
     if (head != "exit" && head != "quit") return relation;
-    if (terms.size() != 1) throw std::runtime_error("exit/quit takes no arguments");
-    static_cast<ProcessHost*>(context)->quitting_ = true;
-    return runtime.arena().unit();
+    if (terms.size() > 2) throw std::runtime_error("usage: exit [STATUS]");
+    int status = 0;
+    if (terms.size() == 2) {
+        auto value = runtime.reduce(terms[1]);
+        if (!runtime.arena().is(value, seed::HostKind::Integer) || runtime.as_number(value)->integer < 0 ||
+            runtime.as_number(value)->integer > 2147483647)
+            throw std::runtime_error("exit STATUS must be an integer 0..2147483647");
+        status = static_cast<int>(runtime.as_number(value)->integer);
+    }
+    auto* self = static_cast<ProcessHost*>(context);
+    self->quitting_ = true;
+    self->exit_code_ = status;
+    // Unwind every enclosing loop, script and world entry immediately.
+    throw ExitRequest{status};
 }
 
 void ProcessHost::reap_foreground() {
@@ -807,56 +817,48 @@ ProcessHost::resolve_symbol(
 // |
 // =============================================================================
 
-seed::Ptr ProcessHost::pipe(
+seed::Ptr ProcessHost::pipeline(
     seed::Runtime& runtime,
     seed::Node* relation,
     seed::Ptr context
 ) {
-    if (
-        !context ||
-        !relation
-    ) {
-        return relation;
-    }
-
-    std::vector<seed::Ptr> segments;
-    seed::Ptr canonical = runtime.flow(relation, segments);
-    if (canonical == relation) return relation;
-    auto self=static_cast<ProcessHost*>(context);
-    // A Seed abstraction composes structurally before native pipe planning.
-    // Substitution may reveal a native consumer while retaining its producer.
-    for (auto segment : segments) {
-        auto form = runtime.is_symbol(segment)
-            ? runtime.arena().make_relation({segment}) : segment;
-        if (runtime.is_abstraction(runtime.application(form)))
-            return canonical;
-    }
-    bool has_foreign_stage = false;
-    for (seed::Ptr segment : segments) {
-        if (self->is_explicit_program(runtime, segment)) has_foreign_stage = true;
-        else if (auto p=self->foreign_program(runtime, segment);p && !p->script)
-            has_foreign_stage = true;
-    }
-    if (!has_foreign_stage) return runtime.reduce(canonical);
+    seed::Ptr body = runtime.pipeline_body(relation);
+    if (!context || !body) return relation;
+    auto* self = static_cast<ProcessHost*>(context);
     std::vector<Stage> stages;
-    std::optional<ProcessResult> input;
-    for (std::size_t i=0;i<segments.size();++i) {
-        std::vector<Stage> part;
-        if (!self->build_pipeline(runtime, segments[i], part, !stages.empty() || input.has_value())) {
-            if (i!=0) throw std::runtime_error("pipeline consumer is not an executable: " + runtime.print(segments[i]));
-            auto value=runtime.reduce(segments[i]);
-            ProcessResult materialized;
-            if (!unpack(runtime,value,materialized)) materialized.out=self->argument(runtime,value);
-            input=std::move(materialized);
+    self->build_braced(runtime, body, stages, false);
+    // A pipeline evaluated as the foreground form streams to the shell's own
+    // output as bytes arrive; nested ones answer -stdout -stderr -status.
+    return self->run_pipeline(runtime, std::move(stages), runtime.reduction_depth() == self->foreground_depth_);
+}
+
+void ProcessHost::build_braced(seed::Runtime& runtime, seed::Ptr body, std::vector<Stage>& stages, bool has_upstream) {
+    if (runtime.is_unit(body)) throw std::runtime_error("empty pipeline context {}");
+    // Split on this context's own | without composing or reducing: the stages
+    // are processes joined by OS pipes, not a Seed application.
+    std::vector<seed::Ptr> segments;
+    if (runtime.flow(runtime.as_node(body), segments) == body)
+        segments = {runtime.product(runtime.terms(runtime.as_node(body)))};
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        const bool upstream = has_upstream || !stages.empty();
+        if (seed::Ptr nested = runtime.pipeline_body(segments[i])) {
+            if (upstream) throw std::runtime_error("{} stage " + std::to_string(i + 1) + " cannot nest a pipeline after |");
+            build_braced(runtime, nested, stages, false);
             continue;
         }
-        if ((!stages.empty() || input) && part.front().input)
-            throw std::runtime_error("a process cannot have multiple stdin producers");
-        if (input) { part.front().input=std::move(input); input.reset(); }
-        stages.insert(stages.end(),std::make_move_iterator(part.begin()),std::make_move_iterator(part.end()));
+        std::vector<Stage> part;
+        bool native = false;
+        try { native = build_pipeline(runtime, segments[i], part, upstream); }
+        catch (const std::exception& error) {
+            throw std::runtime_error("{} stage " + std::to_string(i + 1) + " (" + runtime.print(segments[i]) + "): " + error.what());
+        }
+        if (!native || std::any_of(part.begin(), part.end(), [](const Stage& stage) { return stage.program->script; }))
+            throw std::runtime_error("{} stage " + std::to_string(i + 1) + " is not a native process: " + runtime.print(segments[i]) +
+                                     " (stages are PATH executables or exec \"path\" ...)");
+        if (upstream && (part.size() > 1 || part.front().input))
+            throw std::runtime_error("{} stage " + std::to_string(i + 1) + " has stdin from | and from its own producer");
+        stages.insert(stages.end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
     }
-    if (stages.empty()) throw std::runtime_error("pipeline contains no executable stage");
-    return self->run_pipeline(runtime, std::move(stages), self->streaming_ && runtime.reduction_depth()==self->foreground_depth_);
 }
 
 // =============================================================================
@@ -1112,7 +1114,7 @@ bool ProcessHost::build_pipeline(
 #ifdef _WIN32
         auto terms=runtime.terms(runtime.as_node(form));
         auto executable=find_executable(argument(runtime,terms[1]));
-        if(executable.empty())throw std::runtime_error("explicit executable not found");
+        if(executable.empty())throw std::runtime_error("explicit executable not found: "+argument(runtime,terms[1]));
         auto& retained=explicit_programs_[executable];
         if(!retained)retained=std::make_unique<ForeignProgram>();
         *retained={this,runtime.intern("exec"),std::move(executable)};
@@ -1168,7 +1170,7 @@ bool ProcessHost::build_pipeline(
 
         if (
             !explicit_argv && (runtime.is_relation(term) || (!has_upstream && terms.size() == 2 && i == 1)) &&
-            (is_foreign_program(runtime, term) || producer_form(runtime, term) != term)
+            (runtime.pipeline_body(term) || is_foreign_program(runtime, term) || producer_form(runtime, term) != term)
         ) {
             if (producer) {
                 throw std::runtime_error(
@@ -1191,12 +1193,16 @@ bool ProcessHost::build_pipeline(
     }
 
     if (producer) {
-        if (is_foreign_program(runtime, producer)) {
-            if (!build_pipeline(runtime, producer, stages))
-                throw std::runtime_error("unable to build producer process");
+        if (seed::Ptr body = runtime.pipeline_body(producer)) {
+            // CONSUMER {PIPELINE}: the only application that joins OS pipes,
+            // because the producer explicitly asked for a live stream.
+            build_braced(runtime, body, stages, false);
         } else {
-            // The attached form explicitly requests an input answer. Preserve it
-            // structurally until this OS byte boundary, then project exactly once.
+            // Ordinary application: the producer is reduced to its answer
+            // (a process runs to completion) and that answer becomes stdin.
+            // A bare program identity is invoked, as truth does for its operand.
+            if (runtime.is_symbol(producer) && !runtime.binding(runtime.as_symbol(producer)))
+                producer = runtime.arena().make_relation({producer});
             auto value = runtime.reduce(producer);
             ProcessResult input;
             if (!unpack(runtime, value, input)) input.out = argument(runtime, value);
@@ -1308,11 +1314,14 @@ seed::Ptr ProcessHost::run(
         stages.size() == 1 && !stages.front().input;
 
     if (!foreground) {
+        // Only a { } producer makes this a multi-stage OS pipeline; as the
+        // foreground form it streams to the terminal like a bare { }.
+        const bool live = runtime.reduction_depth()==foreground_depth_ && (streaming_ || stages.size() > 1);
         return run_pipeline(
             runtime,
             std::move(
                 stages
-            ), streaming_ && runtime.reduction_depth()==foreground_depth_
+            ), live
         );
     }
 
@@ -1378,7 +1387,7 @@ seed::Ptr ProcessHost::run_pipeline(
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_info{};
     // Explicitly detached services may outlive a command; ordinary descendants
     // remain owned and killed with this pipeline.
-    job_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    job_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | (allow_breakaway_?JOB_OBJECT_LIMIT_BREAKAWAY_OK:0);
     if (!job || !SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
                                          &job_info, sizeof(job_info)))
         throw std::runtime_error(windows_error(GetLastError()));
@@ -1430,7 +1439,7 @@ seed::Ptr ProcessHost::run_pipeline(
         auto input_pipe = make_pipe(false);
         null_input = std::move(input_pipe.read);
         input_write = std::move(input_pipe.write);
-    } else if(passthrough) {
+    } else if(passthrough && streaming_) {
         HANDLE input=nullptr;
         if(!DuplicateHandle(GetCurrentProcess(),GetStdHandle(STD_INPUT_HANDLE),GetCurrentProcess(),&input,0,TRUE,DUPLICATE_SAME_ACCESS))
             throw std::runtime_error(windows_error(GetLastError()));
@@ -1438,7 +1447,7 @@ seed::Ptr ProcessHost::run_pipeline(
     }
 
     auto spawn_stage =
-        [&job](
+        [&job,this](
             const Stage& stage,
             HANDLE input,
             HANDLE output,
@@ -1511,13 +1520,14 @@ seed::Ptr ProcessHost::run_pipeline(
                 TRUE,
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
                 nullptr,
-                nullptr,
+                working_directory_.empty()?nullptr:working_directory_.c_str(),
                 &startup.StartupInfo,
                 &info
             );
 
         if (!created) {
             throw std::runtime_error(
+                "cannot start " + narrow(stage.program->executable) + ": " +
                 windows_error(
                     GetLastError()
                 )
@@ -1535,6 +1545,7 @@ seed::Ptr ProcessHost::run_pipeline(
             TerminateProcess(process.get(), 1);
             throw std::runtime_error(windows_error(error_code));
         }
+        if (spawn_observer_) spawn_observer_(info.dwProcessId);
         return Spawned{
             std::move(process),
             false,
@@ -1641,10 +1652,22 @@ seed::Ptr ProcessHost::run_pipeline(
 
     std::size_t remaining =
         processes.size();
+    // When the final stage has exited, upstream writers have no reader. Most
+    // exit on the write error; one that ignores it is ended after a grace
+    // period (the SIGPIPE analogue) so it cannot hold the pipeline open.
+    std::vector<bool> severed(processes.size(), false);
+    ULONGLONG consumer_exited = 0;
 
     while (
         remaining > 0
     ) {
+        if (processes.size() > 1 && processes.back().complete) {
+            if (!consumer_exited) consumer_exited = GetTickCount64();
+            else if (GetTickCount64() - consumer_exited > 2000)
+                for (std::size_t i = 0; i + 1 < processes.size(); ++i)
+                    if (!processes[i].complete && !severed[i]) { severed[i] = true; TerminateProcess(processes[i].process.get(), 141); }
+        }
+        auto old_out=out.size(),old_err=err.size();
         if (host_.interrupted()) TerminateJobObject(job.get(), 130);
         drain_available(
             stdout_capture
@@ -1659,6 +1682,7 @@ seed::Ptr ProcessHost::run_pipeline(
                 .get(),
             err
         );
+        if(output_observer_){output_observer_(std::string_view(out).substr(old_out),false);output_observer_(std::string_view(err).substr(old_err),true);}
         if(passthrough){if(!out.empty())host_.write(out);if(!err.empty())host_.error(err);out.clear();err.clear();}
         if(out.size()>16*1024*1024 || err.size()>16*1024*1024)
             throw std::runtime_error("captured output exceeds 16 MiB; use live streams or an artifact file");
@@ -1729,6 +1753,7 @@ seed::Ptr ProcessHost::run_pipeline(
     TerminateJobObject(job.get(), 0);
     if (input_writer.joinable()) input_writer.join();
     if (input_error.load()) throw std::runtime_error(windows_error(input_error.load()));
+    auto old_out=out.size(),old_err=err.size();
     drain_to_eof(
         stdout_capture
             .read
@@ -1742,6 +1767,7 @@ seed::Ptr ProcessHost::run_pipeline(
             .get(),
         err
     );
+    if(output_observer_){output_observer_(std::string_view(out).substr(old_out),false);output_observer_(std::string_view(err).substr(old_err),true);}
     if(passthrough){host_.write(out);host_.error(err);out.clear();err.clear();}
 
     last_status_ =
@@ -1750,14 +1776,18 @@ seed::Ptr ProcessHost::run_pipeline(
                 .status
         );
     if(last_status_.load()==0)
-        for(const auto& process:processes)if(process.status!=0){last_status_=static_cast<int>(process.status);break;}
+        for(std::size_t i=0;i<processes.size();++i)
+            if(processes[i].status!=0 && !severed[i]){last_status_=static_cast<int>(processes[i].status);break;}
     if(last_status_.load()==0 && stages.front().input)last_status_=stages.front().input->status;
+    std::vector<int> statuses;
+    if(processes.size()>1)for(const auto& process:processes)statuses.push_back(static_cast<int>(process.status));
 
     return make_result(
         runtime,
         std::move(out),
         std::move(err),
-        last_status_.load()
+        last_status_.load(),
+        statuses
     );
 
 #else
@@ -1774,11 +1804,16 @@ seed::Ptr ProcessHost::run_pipeline(
 
 seed::Ptr ProcessHost::redirect(seed::Runtime& runtime, seed::Ptr producer, const std::string& path, bool append) {
 #ifdef _WIN32
+    std::vector<Stage> stages;
+    if (seed::Ptr body = runtime.pipeline_body(producer)) {
+        // {PIPELINE} > file: the last stage writes the file directly.
+        build_braced(runtime, body, stages, false);
+        return run_pipeline(runtime, std::move(stages), false, widen(path), append);
+    }
     if (runtime.is_relation(producer)) {
         std::vector<seed::Ptr> segments;
         producer = runtime.flow(runtime.as_node(producer), segments);
     }
-    std::vector<Stage> stages;
     if (!build_pipeline(runtime, producer, stages)) return nullptr;
     return run_pipeline(runtime, std::move(stages), false, widen(path), append);
 #else
@@ -1794,8 +1829,18 @@ seed::Ptr ProcessHost::make_result(
     seed::Runtime& runtime,
     std::string out,
     std::string err,
-    int status
+    int status,
+    const std::vector<int>& stages
 ) {
+    if (!stages.empty()) {
+        std::string text;
+        for (int stage : stages) text += (text.empty() ? "" : " ") + std::to_string(stage);
+        return runtime.product({
+            runtime.arena().make_name(runtime.intern("stdout")), runtime.arena().make_literal(out),
+            runtime.arena().make_name(runtime.intern("stderr")), runtime.arena().make_literal(err),
+            runtime.arena().make_name(runtime.intern("status")), runtime.arena().make_literal(std::to_string(status)),
+            runtime.arena().make_name(runtime.intern("stages")), runtime.arena().make_literal(text)});
+    }
     return runtime.product({
         runtime.arena()
             .make_name(
@@ -1858,10 +1903,12 @@ bool ProcessHost::unpack(
         );
 
     if (
-        terms.size() != 6
+        terms.size() != 6 && terms.size() != 8
     ) {
         return false;
     }
+    if (terms.size() == 8 && (!name_is(runtime, terms[6], "stages") || !runtime.is_literal(terms[7])))
+        return false;
 
     if (
         !name_is(
@@ -1929,6 +1976,19 @@ bool ProcessHost::unpack(
 
     result.status =
         status;
+    result.stages.clear();
+    if (terms.size() == 8) {
+        const std::string& text = runtime.as_literal(terms[7])->bytes;
+        for (std::size_t at = 0; at < text.size();) {
+            auto space = text.find(' ', at);
+            if (space == std::string::npos) space = text.size();
+            int stage = 0;
+            auto parsed = std::from_chars(text.data() + at, text.data() + space, stage);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + space) return false;
+            result.stages.push_back(stage);
+            at = space + 1;
+        }
+    }
 
     return true;
 }

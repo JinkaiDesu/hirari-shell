@@ -3,10 +3,11 @@
 #include "hirari/host.hpp"
 #include "hirari/process.hpp"
 #include "seed/seed.hpp"
-#include "hirari/unity.hpp"
 #include "hirari/world.hpp"
 #include "hirari/vocabulary.hpp"
 #include "hirari/values.hpp"
+#include "hirari/jobs.hpp"
+#include "hirari/control.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -53,8 +54,8 @@ public:
     );
 
     bool execute_file(const std::filesystem::path& path, const std::vector<std::string>& arguments = {});
-    int status() const noexcept { return execution_status_; }
-    UnityProgram& unity() noexcept { return unity_; }
+    // An explicit `exit STATUS` wins over the status of the last evaluation.
+    int status() const noexcept { return processes_.exit_code().value_or(execution_status_); }
     const WorldHost& worlds() const noexcept { return worlds_; }
 
     void cancel_input();
@@ -106,8 +107,9 @@ private:
 
     ProcessHost processes_;
 
-    UnityProgram unity_;
     Values values_;
+    Jobs jobs_;
+    Control control_;
     WorldHost worlds_;
     std::unique_ptr<Vocabulary> vocabulary_;
     bool interactive_session_ = false;

@@ -3,8 +3,8 @@
 'hirari' is a Windows Shell running 'Seed, the language'.
 Seed owns values, identities, bindings, products and evaluation. Hirari owns
 program resolution, live process composition, foreground terminal programs and
-optional access to a running Skunkworks Unity player. Hirari starts and remains
-useful without Unity or a world installed.
+optional typed providers. It is a general-purpose shell; no rendering engine
+is required.
 
 ## Build and run
 
@@ -14,6 +14,19 @@ the development toolchain. MSVC builds use the static runtime: `/MT` for Release
 `/MTd` for Debug. External programs resolve in the child environment's PATH order, including when a bundled tool has the same name as a Windows system program. Redirected child output retains its original bytes.
 Standalone Hirari inherits its host environment; Skunkworks supplies the bundled
 tools and installation-specific environment for its child shell.
+
+An embedding host can set `HIRARI_STARTUP` to an explicit `.seed` file. Interactive
+Hirari evaluates it once before the prompt in the same session; definitions and
+world context remain live. Failure prints a diagnostic and retains the shell.
+Standalone Hirari has no implicit application boot script. `--file` and stream-stage
+invocations do not run this interactive hook.
+
+The embedding launcher owns startup selection. Its supervisor may also supply
+a fresh `HIRARI_STARTUP_STATUS` file path for each shell generation; Hirari
+atomically publishes `ready\n` or `failed\n` followed by the diagnostic. Both
+environment entries are consumed before executing startup, so nested programs
+do not inherit another request to boot. This is a host completion contract,
+not new Seed syntax or another interpreter.
 
 ```powershell
 cmake -S . -B build
@@ -80,49 +93,33 @@ boundary. For tools available in the active environment:
 git "status"
 python -c "print('hello')"
 python -c "print('z'); print('a')" | sort
+{ python -c "print('z'); print('a')" | sort }
 ```
 
-`consumer producer`, `consumer(producer)` and `producer | consumer` compose
-programs; pipes run live. Interactive foreground programs use ConPTY with raw
-input forwarding, resize and interrupt support. `exit` and `quit` end the shell.
+`consumer producer`, `consumer(producer)` and `producer | consumer` are one
+Seed application: the producer's completed answer becomes a native consumer's
+stdin. `{ producer | consumer }` is the POSIX pipeline context: native stages
+run concurrently over OS pipes and stream as they produce, and
+`consumer {pipeline}` feeds a consumer live. Interactive foreground programs use
+ConPTY with raw input forwarding, resize and interrupt support. `exit` and `quit`
+end the shell.
 
-## Unity API
+## Optional capabilities and background work
 
-The native persistent named-pipe client uses the canonical generated
-`hirari/wire_generated.hpp`, supplied by Skunkworks' protocol schema. It sends a
-versioned Hello and accepts Ready with `skunkworks.wire/1` and a session GUID.
-`SKUNK_UNITY_PIPE` selects a local instance-specific pipe name; the fallback is
-`skunkworks.unity`. No Unity connection is required for standalone shell use.
+`provide` transports inert typed values to a linked, process, or optional native
+provider. Provider code lives outside Seed's evaluator. `capability register`
+selects an executable; `capability register-library` selects a C ABI library.
+The shell does not contain a renderer client or a renderer protocol.
 
-Available commands are `unity connect/status/disconnect`, `find`, `type`,
-`component`, `get`, `set`, `call`, `new`, `release`, `batch` and `at`. Exact and
-generic CLR signatures use `new-exact`, `call-exact`, `call-generic` and
-`call-generic-exact`. `i32`, `i64`, `f32`, `f64`, `bytes` and `string` are explicit
-wire-value helpers. There is no intermediate Runtime executable.
+`data bind -name EXPRESSION` evaluates once and retains the result. Ordinary
+`name := expression` deliberately retains the executable expression instead.
+`data list` creates an evaluated collection. `for` and `apply` consume structured
+provider lists directly, preserving element identity and numeric representation.
 
-Use **explicit capture** for a reusable foreign value:
-
-```text
-unity bind -t (unity type "UnityEngine.GameObject")
-unity bind -go (unity new t "GenericProof")
-unity set go "name" "RenamedProof"
-unity get go "name"
-unity call go "SetActive" -false
-unity release go
-```
-
-`unity bind -destination expression` evaluates the expression once and binds
-the returned value. In contrast, `go := unity new t "GenericProof"` keeps the
-ordinary lazy Seed form and runs New again each time go is demanded.
-Object/type references have typed, opaque host payloads and Name identities;
-they are not strings or numeric handles. Numeric and byte results also retain
-their exact wire kind. Released and stale-session references are rejected.
-A broker Fault leaves the connection usable; transport failures disconnect.
-Failed operations are never automatically replayed.
-
-See [Unity integration contract](UNITY_INTEGRATION.md) for exact signatures,
-batches, assembly loading, framing and error behavior.
-
+`job` is ordinary shipped Seed vocabulary over the generic jobs provider. It
+starts native programs asynchronously and exposes IDs, progress, cancellation,
+exit status, results, timeouts, revision slots and opt-in reproducible caching.
+See [typed capabilities and jobs](RUNTIME_CAPABILITIES.md) for the public contracts.
 ## Generic worlds
 
 `world open "path/to/world"` selects an ordinary project root and runs its
@@ -139,10 +136,10 @@ program = "start.seed"
 ```
 
 The descriptor is a strict minimal v1 schema. The entry must be a file inside
-the canonical root. Opening sets the working directory and `SKUNK_WORLD` for
+the canonical root. Opening sets the working directory and `HIRARI_WORLD` for
 child processes. Validation/entry failures restore the previous world selection,
 working directory and environment. Already performed entry side effects remain
-owned by that entry. Full descriptor rules are in the integration contract.
+owned by that entry. The entry is ordinary Seed source, with the same script failure rules.
 
 ## Embedding API
 
@@ -150,30 +147,26 @@ owned by that entry. Full descriptor rules are in the integration contract.
 `Shell::execute(source)` returns a Seed value, or null with a host diagnostic on
 error. `Shell::execute_file(path)` runs expressions in the same evaluator and
 returns success/failure. `Shell::status()` exposes the last execution status;
-`seed()`, `unity()` and `worlds()` permit host inspection.
+`seed()` and `worlds()` permit host inspection.
 
-`UnityClient` owns one persistent local pipe and serial request/response traffic.
-Its connection handshake establishes the server session. `UnityProgram` maps
-reflection vocabulary to that codec and owns typed `ForeignRef` Program contexts.
-`WorldHost` handles descriptor validation, selected root and launch rollback.
-Unity server reflection continues to run through the player's main-thread queue.
+WorldHost handles descriptor validation, selected roots and launch rollback.
 
 ## Current regression suite
 
-CTest registers seven production targets:
+CTest registers eight production targets:
 
 | Test | Coverage |
 | --- | --- |
 | `seed_semantics` | Reader/printer round trips; application and capture mirrors; binding orientation, lazy effects and stable cells; provider demand; comments and continuation. |
 | `hirari_capabilities` | Linked PCRE2, structured predicate snapshots, inert provider identities, registration and non-executing help. |
 | `hirari_shell_completion` | Foreground shell lifecycle, interruption and completion behavior. |
-| `hirari_integration` | Wire golden bytes and all value kinds; partial I/O; persistent Hello/Ready; IDs and frame bounds; faults, disconnect, timeout and no replay; typed/opaque refs, capture identity, release, session guards, CLR signatures and batches; neutral world/script validation and rollback; child environment; Unicode argv/files; control forms; live pipes; exit/quit. |
+| `hirari_integration` | Neutral world/script validation and rollback; child environment; Unicode argv/files; control forms; live pipes; exit/quit. |
+| `hirari_host_capabilities` | Single evaluation, typed collection iteration, exact numbers, foreign reference ownership, optional library registration, jobs, progress, cancellation, timeouts, staleness and caching. |
 | `hirari_eval_name` | CLI preserves a Name. |
 | `hirari_eval_failure` | Missing program returns nonzero. |
 | `hirari_cli_usage` | Invalid CLI options return nonzero. |
 
-The native integration tests compile their own process helper and named-pipe
-peer. Their worlds are temporary neutral fixtures, and PATH is restricted to
+The native integration tests compile their own neutral process helper and provider. Their worlds are temporary neutral fixtures, and PATH is restricted to
 test binaries plus Windows system programs. They do not rely on developer
 Python/Git/Bash installations. The fixture uses binary stdout for exact byte
 assertions; production process output remains unchanged. These tests do not
@@ -187,3 +180,6 @@ source archive and notices are retained by release packaging. See
 [capabilities](CAPABILITIES.md) for regex, provider dispatch and query boundaries.
 
 Installed discovery, writable roots and the executable icon: [installation](INSTALLATION.md).
+
+Optional machine-checked abstraction/substitution proofs and shared C++
+conformance checks: [Seed verification](formal/README.md).

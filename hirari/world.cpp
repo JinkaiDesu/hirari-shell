@@ -47,9 +47,9 @@ std::string string_value(const std::string& s) {
 }
 std::optional<std::wstring> environment() {
 #ifdef _WIN32
-    SetLastError(ERROR_SUCCESS);DWORD n=GetEnvironmentVariableW(L"SKUNK_WORLD",nullptr,0);
+    SetLastError(ERROR_SUCCESS);DWORD n=GetEnvironmentVariableW(L"HIRARI_WORLD",nullptr,0);
     if(!n){if(GetLastError()==ERROR_ENVVAR_NOT_FOUND)return std::nullopt;return std::wstring{};}
-    std::wstring s(n,L'\0');DWORD count=GetEnvironmentVariableW(L"SKUNK_WORLD",s.data(),n);
+    std::wstring s(n,L'\0');DWORD count=GetEnvironmentVariableW(L"HIRARI_WORLD",s.data(),n);
     if(count>=n)throw std::runtime_error("world environment changed concurrently");s.resize(count);return s;
 #else
     return std::nullopt;
@@ -57,7 +57,7 @@ std::optional<std::wstring> environment() {
 }
 void environment(const std::optional<std::wstring>& value) {
 #ifdef _WIN32
-    if(!SetEnvironmentVariableW(L"SKUNK_WORLD",value?value->c_str():nullptr))throw std::runtime_error("cannot set SKUNK_WORLD");
+    if(!SetEnvironmentVariableW(L"HIRARI_WORLD",value?value->c_str():nullptr))throw std::runtime_error("cannot set HIRARI_WORLD");
 #else
     (void)value;throw std::runtime_error("world environment requires Windows");
 #endif

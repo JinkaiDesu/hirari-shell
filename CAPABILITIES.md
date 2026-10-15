@@ -37,7 +37,7 @@ linked identity cannot be silently overwritten.
 
 Names and Symbols have explicit tagged transport representations; accepting
 them does not turn them into text. Records, lists, integers, reals, strings,
-Booleans and Unit remain typed. Live Unity handles and binding cells stay local.
+Booleans and Unit remain typed. Live provider references and binding cells are not serialized as ordinary data.
 Providers must explicitly decide which structural arguments they accept.
 
 `data form VALUE` snapshots structure for a provider. An abstraction retains
@@ -78,3 +78,9 @@ rows / 16 MiB captured row payload; external captured output also has the existi
 
 The PostgreSQL vocabulary and its supported predicate lowering live in the
 Skunkworks repository. Neither SQL planning nor regex semantics enters `seed.cpp`.
+
+## Runtime improvements
+
+See [typed values, optional libraries and background jobs](RUNTIME_CAPABILITIES.md).
+The general shell has no renderer protocol; optional providers preserve their
+own foreign-reference identity and remote lifetime validation.

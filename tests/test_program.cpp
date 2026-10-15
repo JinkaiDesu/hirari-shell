@@ -14,7 +14,7 @@
 #include <fcntl.h>
 int wmain(int argc,wchar_t** argv) {
     SetConsoleCP(CP_UTF8);SetConsoleOutputCP(CP_UTF8);
-    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);_setmode(_fileno(stderr), _O_BINARY);
     std::vector<std::string> a;for(int i=1;i<argc;++i)a.push_back(hirari::win32::narrow(argv[i]));
 #else
 int main(int argc,char** argv) {
@@ -28,6 +28,21 @@ int main(int argc,char** argv) {
     if(auto value=std::getenv("HIRARI_STREAM_ACK"))stream_ack=value;
 #endif
     if(a.empty())return 2;
+    if(a[0]=="job-worker") {
+        auto request=hirari::Json::parse(std::cin);auto id=request.at("request_id");
+        auto emit=[&](const char* kind,hirari::Json value){std::cout<<hirari::Json{{"protocol","hirari.jobs/1"},{"request_id",id},{"kind",kind},{"value",value}}.dump()<<'\n'<<std::flush;};
+        if(a.at(1)=="wrong-id")id="obsolete-request";
+        emit("progress",0.5);std::cerr<<"worker diagnostic\n"<<std::flush;
+        if(a.at(1)=="slow")std::this_thread::sleep_for(std::chrono::seconds(30));
+        if(a.at(1)=="failure")return 7;
+        if(a.at(1)=="error") {
+            std::cout<<hirari::Json{{"protocol","hirari.jobs/1"},{"request_id",id},{"kind","error"},{"message","preparation failed"}}.dump()<<'\n'<<std::flush;
+            return 0;
+        }
+        emit("result",request.at("parameters"));
+        if(a.at(1)=="duplicate")emit("result",request.at("parameters"));
+        return 0;
+    }
     if(a[0]=="--values") {
         auto request=hirari::Json::parse(std::cin);
         auto arguments=request.at("arguments");
@@ -36,6 +51,45 @@ int main(int argc,char** argv) {
     }
     if(a[0]=="emit"){for(std::size_t i=1;i<a.size();++i)std::cout<<a[i]<<'\n';return 0;}
     if(a[0]=="fail")return 7;
+#ifdef _WIN32
+    // Supervision fixtures: identity, live output, duration and exit status.
+    // Liveness without a handshake: the producer stamps wall-clock time, then
+    // pauses; a consumer reached through a live pipe reads the stamp at once.
+    if(a[0]=="stamped") {
+        auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        std::cout<<"first "<<now<<'\n'<<std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        std::cout<<"last\n"<<std::flush;return 0;
+    }
+    if(a[0]=="latency") {
+        std::string s;
+        if(std::getline(std::cin,s) && s.starts_with("first ")) {
+            auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::cout<<(now-std::stoll(s.substr(6))<300?"LIVE\n":"BUFFERED\n");
+        }
+        while(std::getline(std::cin,s))std::cout<<s<<'\n';return 0;
+    }
+    // A producer that ignores write failures, as a SIGPIPE-less program may.
+    if(a[0]=="stubborn") {
+        for(;;){std::cout<<"x\n"<<std::flush;std::cout.clear();std::this_thread::sleep_for(std::chrono::milliseconds(10));}
+    }
+    if(a[0]=="head-one") {std::string s;if(std::getline(std::cin,s))std::cout<<s<<'\n';return 0;}
+    if(a[0]=="pid-sleep"&&a.size()==2) {
+        std::cout<<GetCurrentProcessId()<<'\n'<<std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::stoll(a[1])));
+        std::cout<<"done\n"<<std::flush;return 0;
+    }
+    if(a[0]=="exit-code"&&a.size()==2){std::cerr<<"exiting "<<a[1]<<'\n';return std::stoi(a[1]);}
+    if(a[0]=="print-env"&&a.size()==2) {
+        auto name=hirari::win32::widen(a[1]);DWORD n=GetEnvironmentVariableW(name.c_str(),nullptr,0);
+        if(!n){std::cout<<"<unset>\n";return 0;}
+        std::wstring s(n,L'\0');s.resize(GetEnvironmentVariableW(name.c_str(),s.data(),n));std::cout<<hirari::win32::narrow(s)<<'\n';return 0;
+    }
+#endif
+    if(a[0]=="startup-environment") {
+        bool inherited=std::getenv("HIRARI_STARTUP") || std::getenv("HIRARI_STARTUP_STATUS");
+        std::cout<<(inherited?"STARTUP_ENV_LEAKED\n":"STARTUP_ENV_CLEARED\n");return inherited?7:0;
+    }
     if(a[0]=="bulk") {std::string chunk(65536,'x');for(int i=0;i<320;++i)std::cout.write(chunk.data(),chunk.size());return 0;}
     if(a[0]=="sort"){
         std::vector<std::string> lines;std::string line;while(std::getline(std::cin,line))lines.push_back(line);
@@ -45,8 +99,8 @@ int main(int argc,char** argv) {
     if(a[0]=="relay-live"){std::string s;while(std::getline(std::cin,s))std::cout<<s<<'\n'<<std::flush;return 0;}
     if(a[0]=="environment"){
 #ifdef _WIN32
-        DWORD n=GetEnvironmentVariableW(L"SKUNK_WORLD",nullptr,0);std::wstring s(n,L'\0');
-        if(n){auto c=GetEnvironmentVariableW(L"SKUNK_WORLD",s.data(),n);s.resize(c);std::cout<<hirari::win32::narrow(s)<<'\n';}
+        DWORD n=GetEnvironmentVariableW(L"HIRARI_WORLD",nullptr,0);std::wstring s(n,L'\0');
+        if(n){auto c=GetEnvironmentVariableW(L"HIRARI_WORLD",s.data(),n);s.resize(c);std::cout<<hirari::win32::narrow(s)<<'\n';}
 #endif
         return 0;
     }

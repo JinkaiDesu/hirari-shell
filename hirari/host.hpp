@@ -1,9 +1,22 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 #include <string_view>
 
 namespace hirari {
+
+// Cancellation requested by the user or host. It is not an operation failure,
+// so recovery (`attempt`) never absorbs it.
+struct Interruption : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+// `exit [STATUS]`. Deliberately not a std::exception: failure handlers and
+// script diagnostics must never absorb or rewrite an explicit exit.
+struct ExitRequest {
+    int status = 0;
+};
 
 class Host {
 public:

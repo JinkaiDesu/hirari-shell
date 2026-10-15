@@ -79,6 +79,10 @@ int main(int argc, char** argv) {
 #endif
         }
         if (args.empty()) return shell.run();
+        if (args.size() == 1 && args[0] == "--version") {
+            host.write(std::string("hirari ") + HIRARI_VERSION + "\n");
+            return 0;
+        }
         if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h")) {
             host.write("Usage: hirari [--eval SOURCE | --file PATH [arguments]]\n"
                        "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions; open groups and leading-pipe lines continue the current expression.\n");
@@ -91,6 +95,8 @@ int main(int argc, char** argv) {
         if (args[0] == "--eval") shell.execute(args[1]);
         else {shell.processes().streaming(args[0]=="--stream-file");shell.execute_file(hirari::text_path(args[1]), {args.begin() + 2, args.end()});}
         return shell.status();
+    } catch (const hirari::ExitRequest& request) {
+        return request.status;
     } catch (const std::exception& error) {
         host.error(std::string("error: ") + error.what() + '\n');
         return 1;

@@ -20,6 +20,8 @@ struct ProcessResult {
     std::string err;
 
     int status = 0;
+    // Exit status of each stage of a multi-stage `{ }` pipeline, in order.
+    std::vector<int> stages;
 };
 
 class ProcessHost {
@@ -52,6 +54,10 @@ public:
     void stream_resolver(std::function<StreamProgram(seed::Symbol*)> resolver) { stream_resolver_ = std::move(resolver); }
     void streaming(bool enabled) { streaming_ = enabled; }
     void opaque_values(std::function<bool(seed::Ptr)> predicate) { opaque_values_ = std::move(predicate); }
+    void worker(std::wstring directory, std::function<void(std::string_view,bool)> observer,
+                std::function<void(unsigned long)> spawned = {}) {
+        working_directory_=std::move(directory);output_observer_=std::move(observer);spawn_observer_=std::move(spawned);allow_breakaway_=false;
+    }
 
     // Hirari marks exactly one Seed form as the
     // foreground/root evaluation.
@@ -75,6 +81,8 @@ public:
     void interrupt();
 
     bool quitting() const noexcept { return quitting_; }
+    // Status given to `exit STATUS`, once exit has been requested.
+    std::optional<int> exit_code() const noexcept { return exit_code_; }
     void reap_foreground();
 
     int last_status() const noexcept {
@@ -103,17 +111,20 @@ private:
     static seed::Ptr directory(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr quit(seed::Runtime&, seed::Node*, seed::Ptr);
     bool quitting_ = false;
+    std::optional<int> exit_code_;
     static seed::Ptr invoke(
         seed::Runtime& runtime,
         seed::Node* relation,
         seed::Ptr context
     );
 
-    static seed::Ptr pipe(
+    // `{ STAGE | STAGE ... }`: the POSIX pipeline context.
+    static seed::Ptr pipeline(
         seed::Runtime& runtime,
         seed::Node* relation,
         seed::Ptr context
     );
+    void build_braced(seed::Runtime& runtime, seed::Ptr body, std::vector<Stage>& stages, bool has_upstream);
 
     seed::Program resolve_symbol(
         seed::Runtime& runtime,
@@ -160,7 +171,8 @@ private:
         seed::Runtime& runtime,
         std::string out,
         std::string err,
-        int status
+        int status,
+        const std::vector<int>& stages = {}
     );
 
     Host& host_;
@@ -175,6 +187,11 @@ private:
     std::function<StreamProgram(seed::Symbol*)> stream_resolver_;
     bool streaming_ = false;
     std::function<bool(seed::Ptr)> opaque_values_;
+    std::wstring working_directory_;
+    std::function<void(std::string_view,bool)> output_observer_;
+    // Observes each owned child after it joins this pipeline's job object.
+    std::function<void(unsigned long)> spawn_observer_;
+    bool allow_breakaway_=true;
 
     std::unique_ptr<ConPtySession>
         conpty_;

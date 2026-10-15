@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <sstream>
 #include <functional>
+#include <fstream>
 #include <cctype>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -59,7 +60,7 @@ Shell::Shell(
       processes_(
         seed_,
         host_
-    ), unity_(seed_, host_), values_(seed_,processes_,host_,[this](auto p){return unity_.foreign(p)!=nullptr;}) {
+    ), values_(seed_,processes_,host_),jobs_(values_,host_),control_(seed_,host_) {
     install_regex(values_);
     seed_.set_resolver(
         &Shell::resolve,
@@ -78,7 +79,7 @@ Shell::Shell(
     seed_.define("?", seed::Program{&Shell::help, this, seed::ProgramDispatch::IdentityQuery});
     seed_.define("inspect", seed::Program{&Shell::inspect, this, seed::ProgramDispatch::IdentityQuery});
     seed_.define("vocab", &Shell::vocabulary, this);
-    processes_.opaque_values([this](seed::Ptr value) { return unity_.foreign(value) != nullptr || values_.structured(value); });
+    processes_.opaque_values([this](seed::Ptr value) { return values_.opaque(value) || values_.structured(value); });
     processes_.stream_resolver([this](seed::Symbol* symbol) {
         if(!prefer_script(symbol->text) && !ProcessHost::executable_path(symbol->text).empty())
             return ProcessHost::StreamProgram{};
@@ -129,8 +130,6 @@ std::filesystem::path Shell::find_script(const std::string& name, bool explicit_
     auto count=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
     if(count && count<module.size()){module.resize(count);roots.push_back(std::filesystem::path(module).parent_path()/L"Commands");}
 #endif
-    auto system=shell_environment(L"SKUNK_SYSTEM");
-    if(!system.empty())roots.push_back(text_path(system)/"Commands");
     if (!explicit_file && !file.has_parent_path()) {
         for (const auto* key : {L"HIRARI_PATH", L"PATH"}) {
             std::istringstream paths(shell_environment(key));
@@ -309,13 +308,48 @@ void Shell::wait_foreground() {
 
 int Shell::run() {
     interactive_session_ = true;
-    host_.write("Hirari / Seed\n\n");
+    auto banner=shell_environment(L"HIRARI_BANNER");
+    host_.write(banner.empty()?"HIRARI\nType `help` to begin!\n\n":banner+"\n");
+    // The launcher selects an optional startup program.
+    // Evaluate in this session so definitions/world context reach the prompt.
+    auto startup = shell_environment(L"HIRARI_STARTUP");
+    auto completion = shell_environment(L"HIRARI_STARTUP_STATUS");
+#ifdef _WIN32
+    // One-shot host request: an interactive child must not boot the world again.
+    SetEnvironmentVariableW(L"HIRARI_STARTUP", nullptr);
+    SetEnvironmentVariableW(L"HIRARI_STARTUP_STATUS", nullptr);
+#endif
+    if (!startup.empty()) {
+        std::string failure;
+        try {
+            present(evaluate_script(text_path(startup)));
+        } catch (const ExitRequest& request) {
+            if (request.status != 0) failure = "startup program exited with status " + std::to_string(request.status);
+        } catch (const std::exception& error) { failure = error.what(); report(error); }
+        if (!completion.empty()) {
+            try {
+                auto destination = text_path(completion);
+                auto temporary = destination; temporary += ".tmp";
+                {
+                    std::ofstream status(temporary, std::ios::binary | std::ios::trunc);
+                    status.exceptions(std::ios::failbit | std::ios::badbit);
+                    status << (failure.empty() ? "ready\n" : "failed\n" + failure);
+                    status.close();
+                }
+                // The launcher supplies a fresh path for every shell generation.
+                std::filesystem::rename(temporary, destination);
+            } catch (const std::exception& error) {
+                host_.error(std::string("startup completion unavailable: ") + error.what() + '\n');
+            }
+        }
+        if (processes_.quitting()) return status();
+    }
     std::string line;
     for (;;) {
 #ifdef _WIN32
         if (interactive()) { wait_foreground(); continue; }
 #endif
-        host_.write(waiting() ? ".....> " : "hirari> ");
+        host_.write(waiting() ? ".....> " : "hirari > ");
 #ifdef _WIN32
         if (host_.terminal_capable()) {
             HANDLE console = GetStdHandle(STD_INPUT_HANDLE);
@@ -372,7 +406,7 @@ int Shell::run() {
         }
         if (!input(line)) break;
     }
-    return processes_.last_status();
+    return processes_.exit_code().value_or(processes_.last_status());
 }
 
 bool Shell::source_complete(
@@ -490,7 +524,7 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
             for(const auto& cell:seed_.capture_bindings()) {
                 auto old=std::find_if(before.begin(),before.end(),[&](const auto& v){return v.symbol==cell.symbol;});
                 if(!cell.head || (old!=before.end() && old->revision==cell.revision))continue;
-                try {vocabulary_->save(seed_,cell.symbol->text,vocabulary_->annotation(cell.symbol->text),[this](auto p){return unity_.foreign(p)!=nullptr;});}
+                try {vocabulary_->save(seed_,cell.symbol->text,vocabulary_->annotation(cell.symbol->text),[this](auto p){return values_.opaque(p);});}
                 catch(const std::exception& error){host_.error("definition remains session-local: "+cell.symbol->text+": "+error.what()+"\n");}
             }
         } catch(const std::exception& error) {host_.error(std::string("definition persistence failed: ")+error.what()+"\n");}
@@ -521,6 +555,8 @@ void Shell::report(const std::exception& error) {
 }
 seed::Ptr Shell::execute(std::string_view source) {
     try { return evaluate(source); }
+    // Exit is an orderly end of execution, not a failure.
+    catch (const ExitRequest&) { return seed_.arena().unit(); }
     catch (const std::exception& error) { report(error); return nullptr; }
 }
 seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<seed::Ptr> arguments, bool local) {
@@ -529,7 +565,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
     auto saved_bindings = local ? seed_.capture_bindings() : std::vector<seed::Cell>{};
     auto saved_directory = std::filesystem::current_path();
     auto saved_world = worlds_;
-    auto saved_world_env = shell_environment(L"SKUNK_WORLD");
+    auto saved_world_env = shell_environment(L"HIRARI_WORLD");
     // Frame facts are values, so grouping (args), (argc) and
     // (script-directory) reads them without inventing zero-argument call syntax.
     std::vector<seed::Cell> frame_cells;
@@ -545,7 +581,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
             worlds_ = saved_world;
 #ifdef _WIN32
             auto wide = win32::widen(saved_world_env);
-            SetEnvironmentVariableW(L"SKUNK_WORLD", wide.empty() ? nullptr : wide.c_str());
+            SetEnvironmentVariableW(L"HIRARI_WORLD", wide.empty() ? nullptr : wide.c_str());
 #endif
         }
     }};
@@ -571,7 +607,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
         // is known. A leading | belongs to this expression, even across comments.
         if (seed::Reader::source_leading_pipe(std::string_view(source).substr(consumed))) continue;
         try {
-            if (host_.interrupted()) throw std::runtime_error("Seed program interrupted");
+            if (host_.interrupted()) throw Interruption("Seed program interrupted");
             if (!previous_docstring) present(result);
             auto parsed = first_form ? seed_.read(pending) : nullptr;
             result = evaluate(pending, false);
@@ -598,6 +634,7 @@ bool Shell::execute_file(const std::filesystem::path& path, const std::vector<st
         present(evaluate_script(path, std::move(values)));
         return true;
     }
+    catch (const ExitRequest& request) { return request.status == 0; }
     catch (const std::exception& error) { report(error); return false; }
 }
 seed::Ptr Shell::world(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {

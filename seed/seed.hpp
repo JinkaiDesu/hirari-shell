@@ -275,11 +275,18 @@ public:
         Symbol* symbol
     ) const;
 
+    // Documentation authored beside a Program's definition. Kept apart from
+    // the Program ABI; help derives from it instead of a separate table.
+    void describe(Symbol* symbol, std::string text);
+    std::string_view description(Symbol* symbol) const;
+    const std::unordered_map<Symbol*, std::string>& descriptions() const noexcept { return descriptions_; }
+
 private:
     std::unordered_map<
         Symbol*,
         Program
     > programs_;
+    std::unordered_map<Symbol*, std::string> descriptions_;
 };
 
 // -----------------------------------------------------------------------------
@@ -326,6 +333,7 @@ private:
 
     Ptr read_form();
     Ptr read_group();
+    Ptr read_pipeline();
     Ptr read_literal();
     std::string read_literal_bytes();
     Ptr read_symbol();
@@ -472,6 +480,7 @@ public:
         std::string_view symbol,
         Program program
     );
+    void describe(std::string_view symbol, std::string text);
 
     void set_resolver(
         ResolverFn resolver,
@@ -482,6 +491,14 @@ public:
         Symbol* symbol
     );
     Program identity_query(Ptr form) const;
+
+    // Hosts can expose inert finite collections without teaching Seed their
+    // record format. The callback observes an already evaluated value.
+    using CollectionFn = bool (*)(Runtime&, Ptr, std::vector<Ptr>&, Ptr);
+    void set_collection_resolver(CollectionFn fn, Ptr context = nullptr) {
+        collection_resolver_ = fn; collection_context_ = context;
+    }
+    std::vector<Ptr> collection(Ptr value, bool unquote_atom=false);
 
     // -------------------------------------------------------------------------
     // Language
@@ -526,6 +543,9 @@ public:
     // Pure orientation changes: no evaluation or host/process discovery.
     Ptr compose(Ptr consumer, Ptr producer);
     Ptr flow(Node* relation, std::vector<Ptr>& stages);
+    // `{ ... }` reads as ({} BODY): a POSIX pipeline context. Returns BODY
+    // (a relation, or Unit for `{}`), or nullptr for any other form.
+    Ptr pipeline_body(Ptr form) const;
     // Expand a callable binding head structurally, without reducing its arguments.
     Ptr application(Ptr form);
 
@@ -640,6 +660,8 @@ private:
     > cells_;
 
     ResolverFn resolver_ = nullptr;
+    CollectionFn collection_resolver_ = nullptr;
+    Ptr collection_context_ = nullptr;
     unsigned reduction_depth_ = 0;
     Ptr resolver_context_ = nullptr;
     std::string binding_origin_ = "runtime";

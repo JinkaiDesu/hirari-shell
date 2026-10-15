@@ -198,7 +198,35 @@ A callable destination consumes the structured producer normally; `>>` also
 supplies `-append`, whose meaning the sink implements. No SQL, regex, or file
 format ontology is baked into Seed.
 
-Native process composition uses live pipes. Ordinary process arguments are
+## Application and the `{ }` pipeline context
+
+Outside braces `|` is reverse application: `b | a == a b == a(b)`. A native
+consumer applied to a producer receives the producer's completed answer as
+stdin (a bare identity in a longer argv product stays a scalar argument; `x?`
+explicitly requests an answer as stdin). No OS pipe is created.
+
+`{ b | c | d }` is a separate evaluation context. The reader lowers it to a
+reserved `{}` head over a nested body, so its `|` never orients the enclosing
+expression and `a (b | c)` keeps its meaning. Inside it:
+
+- every stage is a native process (a PATH executable or `exec "path" ...`);
+  Seed callables and `.seed` scripts are rejected with the stage number;
+- stages start together and stream over OS pipes with ordinary backpressure;
+- as the foreground form it streams to the terminal; `consumer {pipeline}`
+  appends the consumer as the last live stage; `{pipeline} > file` writes the
+  file from the last stage;
+- nested in an expression it answers `-stdout -stderr -status -stages`, where
+  `-stages` lists each stage's exit status. The pipeline status is the last
+  stage's, else the first nonzero;
+- when the last stage exits, stages still running after 2 s are ended (status
+  141) so a producer that ignores a broken pipe cannot hold the pipeline open;
+- Ctrl+C or job cancellation ends every stage; stderr is one shared stream.
+
+Braces continue across lines like parentheses. Quoted `"|"` and `"{x}"` are text.
+A Seed callable given `{pipeline}` receives it as written (call-by-name), so
+using the parameter twice runs the pipeline twice.
+
+Ordinary process arguments are
 variadic products; `instantiate * @sky` does not automatically mean
 `instantiate (* @sky)`. Group nested consumers explicitly. Typed provider
 calls use `provide "executable" ...`; projection with `data json/text` is explicit.

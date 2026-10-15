@@ -1,0 +1,7 @@
+{
+  "lean": "4.19.0",
+  "platform": "windows-x86_64",
+  "archive": "lean-4.19.0-windows.zip",
+  "url": "https://github.com/leanprover/lean4/releases/download/v4.19.0/lean-4.19.0-windows.zip",
+  "sha256": "2c197a74b6d9c4d46363e34e06591165ed848237ba66de849f8b8d5539eb3895"
+}

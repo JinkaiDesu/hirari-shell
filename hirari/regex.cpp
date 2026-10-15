@@ -93,5 +93,5 @@ Json run_regex(const std::vector<Json>& wire){
     return pack_value(Json{{"kind","relation"},{"id","pcre2:"+std::to_string(stamp)+":"+std::to_string(++next)},{"columns",columns},{"rows",rows},{"source",{{"provider","pcre2"},{"engine","pcre2"},{"engine_version","10."+std::to_string(PCRE2_MINOR)},{"pattern",pattern.source},{"flags",pattern.flags},{"lifetime","materialized"}}}});
 }
 }
-void install_regex(Values& values){values.link("regex","Linked PCRE2 regex (Unicode).\nprovide -regex \"match\" PATTERN TEXT [FLAGS]\nOperations: match, capture, parse, replace, pattern, info. parse can infer named captures; replace uses PCRE2 $1/${name}. Flags: i/m/s/x/g/q (n aliases m). No PostgreSQL or Unity connection required.",run_regex);}
+void install_regex(Values& values){values.link("regex","Linked PCRE2 regex (Unicode).\nprovide -regex \"match\" PATTERN TEXT [FLAGS]\nOperations: match, capture, parse, replace, pattern, info. parse can infer named captures; replace uses PCRE2 $1/${name}. Flags: i/m/s/x/g/q (n aliases m). No external service connection required.",run_regex);}
 }

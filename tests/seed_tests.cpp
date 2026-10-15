@@ -408,7 +408,12 @@ last\nline""")seed");
 
 } // namespace
 
+int run_all();
 int main() {
+    try { return run_all(); }
+    catch (const std::exception& error) { std::cerr << "seed_tests: FAIL: " << error.what() << std::endl; return EXIT_FAILURE; }
+}
+int run_all() {
     semantics();
     abstractions();
     abstraction_reuse();
@@ -484,7 +489,17 @@ int main() {
         "(-a)?",
         "\"literal?\"",
         "camera := unity -Camera.main",
-        "-((a)(())(b))"
+        "-((a)(())(b))",
+        "{a | b}",
+        "{}",
+        "{ls}",
+        "{a | b}?",
+        "c {a | b | d}",
+        "a (b {c | d})",
+        "{ a (b | c) | d }",
+        "{(a b)}",
+        "\"{x}\"",
+        "-(pipe)"
     };
 
     for (const char* source : samples) {
@@ -494,6 +509,36 @@ int main() {
 
         require(rt.structural(one) == rt.structural(two),
                 "round trip changed structure");
+        require(rt.structural(rt.read(rt.structural(one))) == rt.structural(one),
+                "structural round trip changed structure");
+    }
+
+    // `{ }` is a pipeline context: a reserved head over a nested body. Its |
+    // never orients the enclosing relation; outside braces | is unchanged.
+    {
+        seed::Ptr braced = rt.read("c {a | b}");
+        auto outer = rt.terms(rt.as_node(braced));
+        require(outer.size() == 2 && rt.pipeline_body(outer[1]), "brace did not lower to one pipeline term");
+        auto body = rt.terms(rt.as_node(rt.pipeline_body(outer[1])));
+        require(body.size() == 3 && rt.as_symbol(body[1])->text == "|", "brace body lost its pipe");
+        auto grouped = rt.terms(rt.as_node(rt.read("c (a | b)")));
+        require(grouped.size() == 2 && !rt.pipeline_body(grouped[1]) &&
+                rt.terms(rt.as_node(grouped[1])).size() == 3, "parenthesized pipe changed");
+        require(rt.pipeline_body(rt.read("{ls}")) && rt.is_relation(rt.pipeline_body(rt.read("{ls}"))),
+                "single-stage brace body must stay a relation");
+        require(rt.is_unit(rt.pipeline_body(rt.read("{}"))), "empty pipeline body is Unit");
+        require(rt.print(rt.read("c {a | b}")) == "c { a | b }", "brace printing changed");
+        require(rt.is_literal(rt.read("\"{a | b}\"")), "quoted brace must remain a literal");
+        bool rejected = false;
+        try { rt.read("{a | b"); } catch (const std::exception&) { rejected = true; }
+        require(rejected, "unterminated brace accepted");
+        rejected = false;
+        try { rt.read("(a }"); } catch (const std::exception&) { rejected = true; }
+        require(rejected, "mismatched brace accepted");
+        require(!seed::Reader::source_complete("{ a |") && seed::Reader::source_complete("{ a | b }") &&
+                seed::Reader::source_complete("\"{\""), "brace continuation depth");
+        // In a host-less runtime the context is inert data: no process is implied.
+        require(rt.pipeline_body(rt.run("{a | b}")), "core runtime must not reduce a pipeline context");
     }
 
     std::cout << "seed_tests: PASS\n";

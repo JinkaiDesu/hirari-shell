@@ -152,7 +152,9 @@ int wmain(int argc,wchar_t** argv) {
         auto outputPath = root / L"help output.txt";
         run("help -documented > " + quote(hirari::path_text(outputPath)));
         require(std::filesystem::file_size(outputPath) > 0, "metadata help routing failed");
-        require(process("help -documented | hirari_test_program relay").out.find("No effects during help.") != std::string::npos,
+        // | is application: a Seed answer reaches a native consumer's stdin when
+        // explicitly demanded with ?, otherwise it is an argument.
+        require(process("(help -documented)? | hirari_test_program relay").out.find("No effects during help.") != std::string::npos,
                 "metadata help pipeline failed");
         auto forbiddenPath = root / L"must not exist.txt";
         require(!shell.execute("help (hirari_test_program emit \"oops\" > " + quote(hirari::path_text(forbiddenPath)) + ")") &&
@@ -195,9 +197,9 @@ int wmain(int argc,wchar_t** argv) {
         run("say := hirari_test_program emit \"prefix\"");run("vocab save -say");
         run("vocab restore -say 1");require(process("say \"restored\"").out=="restored\n","historical structural restore");
         require(r.as_literal(run("vocab history -say"))->bytes.find("A structured greeting tool")!=std::string::npos,"annotation/history lost");
-        run("unity bind -opaque (unity i32 4)");require(!shell.execute("vocab save -opaque"),"opaque CLR value serialized as a forged Name");
-        require(!shell.execute("hirari_test_program emit opaque"),"opaque CLR identity flattened into native argv");
-        require(!shell.execute("hirari_test_program relay opaque?"),"opaque CLR query answer flattened into native stdin");
+        run("data bind -opaque (data list 4)");run("vocab save -opaque");
+        require(!shell.execute("hirari_test_program emit opaque"),"structured provider identity flattened into native argv");
+        require(!shell.execute("hirari_test_program relay opaque?"),"structured provider query answer flattened into native stdin");
         SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"interactive vocabulary").c_str());
         {
             Host interactiveHost;hirari::Shell interactiveShell(interactiveHost);
@@ -213,16 +215,20 @@ int wmain(int argc,wchar_t** argv) {
             require(restored.seed().as_literal(restored.execute("? missing"))->bytes.find("missing :=")!=std::string::npos,"initial evaluator error prevented definition persistence");
         }
         SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"user vocabulary").c_str());
-        // Live byte stages invoke independent script processes; ordinary calls above stay structured.
-        write(root/L"producer.seed","hirari_test_program delayed\n");
-        write(root/L"consumer.seed","hirari_test_program relay-live\n");
-        for(auto form:{"producer | hirari_test_program observe", "producer? | hirari_test_program observe",
-                       "hirari_test_program observe producer?", "hirari_test_program delayed | consumer | hirari_test_program observe"}){
+        // Script stages compose by Seed application in this shell: the script's
+        // answer becomes the native consumer's stdin. They are not { } stages.
+        write(root/L"producer.seed","hirari_test_program emit \"first\" \"last\"\n");
+        for(auto form:{"producer? | hirari_test_program relay", "hirari_test_program relay producer?",
+                       "hirari_test_program relay(producer?)"}){
             auto answer=process(form);
-            require(answer.status==0 && answer.out.starts_with("LIVE\n"),"script composition buffered live output");
+            require(answer.status==0 && answer.out=="first\nlast\n","script composition lost its answer");
         }
+        // A bare identity among a longer argv product stays a scalar argument.
+        require(process("producer | hirari_test_program emit").out=="producer\n","bare script operand was not scalar argv");
+        require(!shell.execute("{producer | hirari_test_program relay}"),"a .seed script was accepted as a { } stage");
         write(root/L"failure.seed","hirari_test_program fail\n");
-        require(process("failure | hirari_test_program relay").status!=0,"pipeline hid failed script stage");
+        // A failed script answer is an evaluation error, never an empty stdin.
+        require(!shell.execute("failure? | hirari_test_program relay"),"application hid a failed script answer");
         write(root/L"user vocabulary"/L"vocabulary.bin","DAMAGED");
         require(!shell.execute("vocab save -say"),"damaged vocabulary overwritten");
         Host recovery;hirari::Shell safe(recovery);require(safe.execute("\"shell survives\"")&&recovery.errorText.find("unavailable")!=std::string::npos,"damaged store killed shell");
