@@ -54,6 +54,10 @@ public:
     void stream_resolver(std::function<StreamProgram(seed::Symbol*)> resolver) { stream_resolver_ = std::move(resolver); }
     void streaming(bool enabled) { streaming_ = enabled; }
     void opaque_values(std::function<bool(seed::Ptr)> predicate) { opaque_values_ = std::move(predicate); }
+    // Writes a Seed value (text as bytes, structured values as an envelope) for
+    // `{ VALUE > "file" }` when the producer is not a native process.
+    using ValueWriter = std::function<void(seed::Runtime&, seed::Ptr, const std::string&, bool)>;
+    void value_writer(ValueWriter writer) { value_writer_ = std::move(writer); }
     void worker(std::wstring directory, std::function<void(std::string_view,bool)> observer,
                 std::function<void(unsigned long)> spawned = {}) {
         working_directory_=std::move(directory);output_observer_=std::move(observer);spawn_observer_=std::move(spawned);allow_breakaway_=false;
@@ -105,7 +109,17 @@ private:
         std::vector<std::string>
             arguments;
         std::optional<ProcessResult> input;
+        // `{ CONSUMER < "file" ... }`: stdin read directly from a file.
+        std::wstring input_file;
     };
+
+    // The stream operators of one `{ }` context, removed from its body.
+    struct Redirection {
+        std::string input;
+        std::string output;
+        bool append = false;
+    };
+    seed::Ptr strip_redirection(seed::Runtime& runtime, seed::Ptr body, Redirection& io);
 
     static seed::Ptr truth(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr directory(seed::Runtime&, seed::Node*, seed::Ptr);
@@ -187,6 +201,7 @@ private:
     std::function<StreamProgram(seed::Symbol*)> stream_resolver_;
     bool streaming_ = false;
     std::function<bool(seed::Ptr)> opaque_values_;
+    ValueWriter value_writer_;
     std::wstring working_directory_;
     std::function<void(std::string_view,bool)> output_observer_;
     // Observes each owned child after it joins this pipeline's job object.

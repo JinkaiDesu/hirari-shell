@@ -333,6 +333,9 @@ private:
 
     Ptr read_form();
     Ptr read_group();
+    bool opens_line_block() const;
+    Ptr read_line_block();
+    Ptr read_list();
     Ptr read_pipeline();
     Ptr read_literal();
     std::string read_literal_bytes();
@@ -520,6 +523,19 @@ public:
     // Unit, empty/zero/false literals, and the identity :false are false.
     bool truth(Ptr value) const;
 
+    // Demand a form as a statement: a bare callable runs; values stay values.
+    Ptr demand(Ptr form);
+
+    // When set (by a shell), applying an unknown program fails instead of
+    // leaving the application as inert data. Pure Seed leaves it inert.
+    bool strict_heads() const noexcept { return strict_heads_; }
+    void strict_heads(bool enabled) noexcept { strict_heads_ = enabled; }
+
+    // Reader-lowered forms: ((;) STATEMENT ...) for a line block and
+    // ([] ELEMENT ...) for a list literal.
+    bool is_block(Ptr form) const;
+    bool is_list_form(Ptr form) const;
+
     std::string print(
         Ptr form
     ) const;
@@ -663,6 +679,7 @@ private:
     CollectionFn collection_resolver_ = nullptr;
     Ptr collection_context_ = nullptr;
     unsigned reduction_depth_ = 0;
+    bool strict_heads_ = false;
     Ptr resolver_context_ = nullptr;
     std::string binding_origin_ = "runtime";
     std::string binding_source_;

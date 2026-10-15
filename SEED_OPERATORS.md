@@ -5,7 +5,22 @@ a b       == b | a       == a(b)
 a() body  == body : a
 (a() body) value  -> body[a := value]
 name := expression      == expression = name
+expression =>           # one reduction step, reified
+3 - 3  -> 0             # spaced operators; attached -3 is a number
+[a b c]                 # list literal: elements evaluated once
 ```
+
+| Syntax | Responsibility |
+| --- | --- |
+| `( )` | Application and grouping. A `(` that ends its line opens a line block. |
+| `[ ]` | List literal. |
+| `{ }` | Live POSIX streams: `\|` pipes, `<` stdin from a file, `>` and `>>` stdout to a file. |
+| `#[ ]` | Nestable multi-line comment. |
+| `""` | Text. |
+| `-name` | Name. |
+| `:=`, `:`, `\|`, `=>` | Binding, abstraction, reverse application, one reduction step. |
+| `< <= > >= == !=` | Comparison (outside `{ }`). |
+| `+ - * /` | Arithmetic, written with spaces (`* name` prefix still reads a cell). |
 
 Seed still uses pointer products and the Program ABI. Abstractions are ordinary
 products containing binder, Unit, and body; there is no Lambda AST or evaluator.
@@ -42,10 +57,14 @@ when execution proceeds to the next form, and remains the result of a doc-only f
 
 Names use `-name`; old attached `:name` is removed. Reify a product with
 `-(forms ...)`, Unit with `-()`, or a glyph with `-(>)`. Names remain values,
-not strings. `-pipe`, `-bind`, `-lt`, `-le`, `-and`, `-or` name the existing
-Programs `|`, `=`, `<`, `<=`, `&&`, `||`. `help -pipe` inspects that identity.
+not strings. `-pipe`, `-bind`, `-lt`, `-le`, `-gt`, `-ge`, `-eq`, `-ne`,
+`-and`, `-or` name the Programs `|`, `=`, `<`, `<=`, `>`, `>=`, `==`, `!=`,
+`&&`, `||`. `help -pipe` inspects that identity.
 Explicit grouping preserves a raw identity: `-(lt)` names the Symbol `lt`,
 while `-lt` names `<`. The printer retains this distinction.
+
+A registered Program is never an abstraction binder, so `if () a b` calls
+`if` with a Unit condition instead of building an abstraction named `if`.
 
 `help -NAME`, `? -NAME` and `NAME help` read identity descriptions. A bare Symbol
 is also accepted as an identity without resolving its executable head. Binding
@@ -125,10 +144,31 @@ invokes the named Program as `< 3 5`. The same generic mechanism supports
 `(3 -is -int)?` when vocabulary supplies an `is` Program. Seed supplies no
 universal classification rules, inverse solver, or SQL translator.
 
-`<` is strict ordering; `<=` is ordering or equality of scalar values. Reverse
-the operands for the inverse. Semantic equivalence/classification belongs to
-vocabulary such as `is`. Group compound operands and `if` conditions:
-`if (x < 3) ("low") ("high")`.
+`<`, `<=`, `>`, `>=` order two numbers or two strings (int64 and binary64
+compare exactly); other kinds fail. `==` and `!=` compare numbers by value,
+strings by bytes and Names by identity or structure; different kinds are
+simply unequal. Operands may be compound (`x + 1 < 5`); a chain such as
+`1 < 2 < 3` is rejected. Semantic classification still belongs to vocabulary
+such as `is`. Group `if` conditions: `if (x < 3) "low" "high"`.
+
+Arithmetic operators are standalone tokens written with spaces: `+ - * /`.
+`*` and `/` bind tighter than `+` and `-`; all associate left; arithmetic
+binds tighter than comparison, which binds tighter than `|`, `&&`/`||` and
+binding. Integers stay exact and overflow fails; any real operand gives a
+real; exact integer division stays an integer (`8 / 2` is `4`, `10 / 4` is
+`2.5`); dividing by zero fails. `+` also joins two strings, `- x` negates.
+Attached spellings are unchanged: `-3` is a number, `-x` a Name and `*x`
+reads a cell, so `(3 - 3)` is `0` while `(3 -3)` is the product `3 -3`.
+
+`EXPR =>` (or `=> EXPR`) advances `EXPR` by exactly one step of the
+reducer's own order and answers the next form reified (`-(...)`), without
+evaluating further. A step orients `|`, normalizes a colon abstraction,
+unfolds a binding, substitutes an argument into an abstraction, or computes
+an arithmetic/comparison operator whose operands are values (left operand
+first). Invoking any other Program (a builtin, native process, pipeline,
+binding, line block or list) is an effect: `=>` stops before it and names it;
+demand with `?` to run it. `EXPR => =>` takes two steps; a normal form steps
+to itself. `((x() (x x)) 5) =>` is `-((5)(5))`.
 
 `A && B` evaluates B only after A succeeds; otherwise it returns A.
 `A || B` returns successful A; otherwise it evaluates B. The selected value
@@ -136,8 +176,8 @@ and process status survive. Both have equal precedence and associate left,
 as shell control lists do. Prefix Programs `&& A B`, `|| A B`, and
 `apply -and -(A B)` use the same lazy behavior. `||` is one token; `| |` is two.
 
-Binding owns its RHS, followed by short circuit, routing/comparison, flow, then
-ordinary Program invocation. A colon-framed abstraction retains the whole
+Binding owns its RHS, followed by `=>`, short circuit, comparison, flow (`|`),
+arithmetic (`+ -`, then `* /`), then ordinary Program invocation. A colon-framed abstraction retains the whole
 body before any effects. Group nested bindings and compound scalar operands.
 
 ## Output routing and program boundaries
@@ -171,9 +211,26 @@ FROM numbers
 | data json
 ```
 
-That pipeline is one expression. Inside parentheses, newlines are ordinary
-whitespace; inside multiline literals they remain data. No indentation blocks,
-implicit function bodies or synthetic whole-file application are introduced.
+That pipeline is one expression. Inside multiline literals newlines remain
+data. A group that starts on the same line as its `(` is one expression whose
+newlines are whitespace. A `(` that ends its physical line (after spaces, tabs
+or a line comment) opens a **line block**: its lines are statements with the
+file rules (a newline ends a statement; a trailing `\`, an open group or a
+leading `|` continues it). The block runs its statements in order in the
+enclosing scope and answers the last value; a leading string documents it.
+
+```seed
+if (count < 3) (
+    data print "few"
+    data bind -level -low
+) (
+    data print "many"
+)
+```
+
+In Hirari a line block behaves like a file: each line's result is presented
+and a line whose process fails stops the block. A block with one statement is
+just that statement. No indentation rules are introduced.
 The shebang is entry metadata/comment trivia; a leading docstring is a literal
 with a documentation convention, not an executable command. Earlier definitions
 remain available to later expressions under the existing source/run scope rules.
@@ -186,17 +243,20 @@ Literal spaces and physical newlines/tabs are data. Ordinary and triple-quoted
 strings both decode `\n`, `\r`, `\t`, `\\` and `\"`; triple quotes are already
 supported. Source layout does not trim or dedent literal contents.
 
-`producer > destination` writes; `producer >> destination` appends. A quoted
-file path receives native stdout directly, without materializing large output
-in Hirari. Native stderr and failure status remain in the process result.
-String values write exact bytes. Other serializable values write a
-`hirari.values/1` envelope, preserving Names, Unit, columns, and scalar types.
-`data read "file"` restores one envelope. Appending structured values produces
-a stream of envelopes, not an implicitly merged relation.
+Redirection is a stream operator and lives inside `{ }`:
+`{ producer > "file" }` writes, `{ producer >> "file" }` appends and
+`{ consumer < "file" }` reads the first stage's stdin from a file. A native
+producer's stdout goes to the file directly, without materializing large
+output in Hirari; native stderr and failure status remain in the process
+result. A Seed value may also be written: `{ VALUE > "file" }` writes text as
+exact bytes and other serializable values as a `hirari.values/1` envelope,
+preserving Names, Unit, columns, and scalar types. `data read "file"` restores
+one envelope; appending structured values produces a stream of envelopes.
+Outside braces `<` and `>` compare values and `>>` is an error. No SQL, regex,
+or file format ontology is baked into Seed.
 
-A callable destination consumes the structured producer normally; `>>` also
-supplies `-append`, whose meaning the sink implements. No SQL, regex, or file
-format ontology is baked into Seed.
+`[a b c]` is a list literal: each element is evaluated once, exactly like
+`data list a b c`, and `[]` is the empty list. `#[` still opens a comment.
 
 ## Application and the `{ }` pipeline context
 
@@ -211,6 +271,8 @@ expression and `a (b | c)` keeps its meaning. Inside it:
 
 - every stage is a native process (a PATH executable or `exec "path" ...`);
   Seed callables and `.seed` scripts are rejected with the stage number;
+- `< "file"` feeds the first stage's stdin; `> "file"` / `>> "file"` end the
+  context and receive the last stage's stdout;
 - stages start together and stream over OS pipes with ordinary backpressure;
 - as the foreground form it streams to the terminal; `consumer {pipeline}`
   appends the consumer as the last live stage; `{pipeline} > file` writes the

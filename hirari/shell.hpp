@@ -82,6 +82,8 @@ private:
     static seed::Ptr help(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr inspect(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr vocabulary(seed::Runtime&, seed::Node*, seed::Ptr);
+    // A line block: its lines run like a file's statements.
+    static seed::Ptr block(seed::Runtime&, seed::Node*, seed::Ptr);
     void wait_foreground();
     seed::Ptr evaluate(std::string_view source, bool display = true);
     seed::Ptr evaluate_script(const std::filesystem::path& path, std::vector<seed::Ptr> arguments = {}, bool local = false);

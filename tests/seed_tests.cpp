@@ -541,6 +541,85 @@ int run_all() {
         require(rt.pipeline_body(rt.run("{a | b}")), "core runtime must not reduce a pipeline context");
     }
 
+    // Operators are standalone tokens. Attached spellings keep their meaning:
+    // -3 is a number and -foo a Name, so (3 - 3) and (3 -3) differ.
+    {
+        seed::Runtime ops;
+        auto value = [&](std::string_view source) { return ops.print(ops.run(source)); };
+        require(value("3 - 3") == "0" && value("3 -3") == "3 -3", "spaced minus must subtract; attached -3 stays a number");
+        require(value("1 + 2 * 3") == "7" && value("(1 + 2) * 3") == "9" && value("10 - 4 - 3") == "3",
+                "arithmetic precedence or left associativity changed");
+        require(value("8 / 2") == "4" && value("10 / 4") == "2.5" && value("2.5 * 2") == "5.0",
+                "division or real arithmetic changed");
+        require(value("\"ab\" + \"cd\"") == "\"abcd\"" && value("- 5") == "-5", "string join or negation changed");
+        bool failed = false;
+        try { ops.run("1 / 0"); } catch (const std::exception&) { failed = true; }
+        require(failed, "division by zero must fail");
+        failed = false;
+        try { ops.run("9223372036854775807 + 1"); } catch (const std::exception&) { failed = true; }
+        require(failed, "integer overflow must fail");
+        for (auto [source, expected] : {std::pair{"3 < 5", "-true"}, {"5 > 3", "-true"}, {"3 >= 3", "-true"},
+                                        {"3 <= 2", "-false"}, {"3 == 3.0", "-true"}, {"\"a\" != \"b\"", "-true"},
+                                        {"1 == \"1\"", "-false"}, {"-x == -x", "-true"}, {"1 + 2 < 4", "-true"},
+                                        {"> 5 3", "-true"}})
+            require(value(source) == expected, "comparison operator changed");
+        require(ops.print(ops.read("3 -gt 5")) == "3 -gt 5" && value("(3 -gt 5)?") == "-false",
+                "named comparison lost its identity or demand");
+        failed = false;
+        try { ops.run("1 < 2 < 3"); } catch (const std::exception&) { failed = true; }
+        require(failed, "chained comparison must be rejected");
+        // Tokens: == => >= != are single identities.
+        auto token_terms = ops.terms(ops.as_node(ops.read("a == b => c >= d != e")));
+        require(token_terms.size() == 9 && ops.as_symbol(token_terms[1])->text == "==" &&
+                ops.as_symbol(token_terms[3])->text == "=>" && ops.as_symbol(token_terms[5])->text == ">=" &&
+                ops.as_symbol(token_terms[7])->text == "!=", "operator tokens split incorrectly");
+        // A registered Program is never an abstraction binder.
+        require(value("if () \"yes\" \"no\"") == "\"no\"", "if () became an abstraction");
+    }
+
+    // => advances exactly one reduction step and never runs an effect.
+    {
+        seed::Runtime steps;
+        auto step = [&](std::string_view source) { return steps.print(steps.run(source)); };
+        require(step("((x() (x x)) 5) =>") == "-((5)(5))", "=> did not take one beta step");
+        require(step("(2 + 3) * 4 =>") == "-((5)(*)(4))", "=> did not compute the leftmost operand first");
+        require(step("(2 + 3) * 4 => =>") == "-(20)", "=> => did not take two steps");
+        steps.run("twice := (x x) : x");
+        require(step("twice 4 => =>") == "-((4)(4))", "=> did not unfold then substitute");
+        require(step("5 =>") == "-(5)", "=> changed a normal form");
+        bool stopped = false;
+        try { steps.run("if -true 1 2 =>"); } catch (const std::exception& error) {
+            stopped = std::string(error.what()).find("effect") != std::string::npos;
+        }
+        require(stopped, "=> ran a Program instead of stopping before the effect");
+    }
+
+    // A ( that ends its line opens a line block: lines are statements.
+    // A group that starts on the same line stays one expression.
+    {
+        seed::Runtime blocks;
+        seed::Ptr block = blocks.read("(\n  a := 1\n  a + 1\n)");
+        require(blocks.is_block(block) && blocks.terms(blocks.as_node(block)).size() == 3, "line block did not lower");
+        require(blocks.print(blocks.run("(\n  a := 1\n  a + 1\n)")) == "2", "line block did not run in order");
+        require(!blocks.is_block(blocks.read("(data list\n  1 2)")), "same-line group became a block");
+        require(blocks.print(blocks.read("(\n  only one\n)")) == "only one", "single-statement block changed");
+        require(blocks.print(blocks.read("(\n  a\n  | b\n)")) == "a | b", "leading | did not continue a block line");
+        require(blocks.print(blocks.read("(\n  a \\\n    b\n  c\n)")) == "(\na b\nc\n)", "continuation or block printing changed");
+        require(blocks.print(blocks.run("if -true (\n  b := 2\n  b * 3\n) ()")) == "6", "block branch did not run");
+        require(!seed::Reader::source_complete("if c (\n a\n") && seed::Reader::source_complete("if c (\n a\n)"),
+                "block continuation depth");
+    }
+
+    // [a b c] is a list literal: each element evaluated once.
+    {
+        seed::Runtime lists;
+        require(lists.print(lists.read("[1 (2 + 3) -x]")) == "[1 (2 + 3) -x]", "list literal printing changed");
+        require(lists.print(lists.run("[1 (2 + 3) \"x\"]")) == "-((-list)(-((1)(5)(\"x\"))))", "list literal did not evaluate its elements");
+        require(lists.collection(lists.run("[1 2 3]")).size() == 3 && lists.collection(lists.run("[]")).empty(),
+                "list literal is not a collection");
+        require(lists.is_list_form(lists.read("#[ a comment ] [a]")), "#[ comment no longer precedes a list");
+    }
+
     std::cout << "seed_tests: PASS\n";
     return EXIT_SUCCESS;
 }

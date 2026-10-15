@@ -16,7 +16,10 @@ std::vector<seed::Ptr> items(seed::Runtime& r,seed::Ptr p){if(r.is_unit(p))retur
 Values::Values(seed::Runtime& r,ProcessHost& p,Host& h):runtime_(r),processes_(p),host_(h) {
     r.define("provide",&Values::provide,this);r.define("data",&Values::data,this);
     r.define("capability",&Values::capability,this);
-    r.define(">", &Values::route, this);r.define(">>", &Values::route, this);
+    // Output redirection is a { } stream operator; outside braces > compares.
+    p.value_writer([this](seed::Runtime& rt, seed::Ptr value, const std::string& path, bool append) {
+        write_value(rt, value, path, append);
+    });
     r.set_collection_resolver(&Values::collection, this);
 }
 bool Values::collection(seed::Runtime& r,seed::Ptr value,std::vector<seed::Ptr>& out,seed::Ptr context) {
@@ -370,40 +373,14 @@ seed::Ptr Values::data(seed::Runtime& r,seed::Node* relation,seed::Ptr context) 
     throw std::runtime_error("invalid data operation or argument count");
 }
 
-seed::Ptr Values::route(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
-    auto& self = *static_cast<Values*>(context);
-    auto terms = r.terms(relation);
-    auto routing = [&](seed::Ptr p) {return r.is_symbol(p) &&
-        (r.as_symbol(p)->text == ">" || r.as_symbol(p)->text == ">>");};
-    std::size_t at = terms.size();
-    for (std::size_t i = 0; i < terms.size(); ++i) if (routing(terms[i])) {
-        if (at != terms.size()) throw std::runtime_error("group multiple output destinations explicitly");
-        at = i;
-    }
-    if (at == terms.size()) return relation;
-    seed::Ptr producer, destination;
-    if (at == 0 && terms.size() == 3) {producer = terms[1];destination = terms[2];}
-    else if (at > 0 && at + 2 == terms.size()) {
-        producer = r.product(std::vector<seed::Ptr>(terms.begin(), terms.begin() + at));
-        destination = terms.back();
-    } else throw std::runtime_error("use VALUE > DESTINATION or VALUE >> DESTINATION");
-    bool append = r.as_symbol(terms[at])->text == ">>";
-    destination = r.reduce(destination);
-    if (!r.is_literal(destination)) {
-        if (append) destination = r.compose(destination, r.arena().make_name(r.intern("append")));
-        return r.reduce(r.compose(destination, producer));
-    }
-    auto path = r.as_literal(destination)->bytes;
-    if (auto result = self.processes_.redirect(r, producer, path, append)) return result;
-    auto value = r.reduce(producer);
+void Values::write_value(seed::Runtime& r, seed::Ptr value, const std::string& path, bool append) {
     ProcessResult process;
     std::string bytes;
     if (ProcessHost::unpack(r, value, process)) bytes = process.out;
     else if (r.is_literal(value)) bytes = r.as_literal(value)->bytes;
-    else bytes = Json{{"protocol",value_protocol},{"value",self.encode(value)}}.dump() + "\n";
+    else bytes = Json{{"protocol",value_protocol},{"value",encode(value)}}.dump() + "\n";
     std::ofstream output(text_path(path), std::ios::binary | (append ? std::ios::app : std::ios::trunc));
     output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     output.flush();if (!output) throw std::runtime_error("cannot write output destination: " + path);
-    return ProcessHost::unpack(r, value, process) ? value : r.arena().unit();
 }
 }

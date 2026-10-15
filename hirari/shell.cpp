@@ -79,6 +79,10 @@ Shell::Shell(
     seed_.define("?", seed::Program{&Shell::help, this, seed::ProgramDispatch::IdentityQuery});
     seed_.define("inspect", seed::Program{&Shell::inspect, this, seed::ProgramDispatch::IdentityQuery});
     seed_.define("vocab", &Shell::vocabulary, this);
+    // Line blocks behave like files: each line's result is shown and a failing
+    // line stops the block. Unknown programs fail wherever they are applied.
+    seed_.define("(;)", &Shell::block, this);
+    seed_.strict_heads(true);
     processes_.opaque_values([this](seed::Ptr value) { return values_.opaque(value) || values_.structured(value); });
     processes_.stream_resolver([this](seed::Symbol* symbol) {
         if(!prefer_script(symbol->text) && !ProcessHost::executable_path(symbol->text).empty())
@@ -104,6 +108,27 @@ Shell::Shell(
         vocabulary_=std::make_unique<Vocabulary>(text_path(directory));
         try{vocabulary_->load(seed_);}catch(const std::exception& error){host_.error(std::string("vocabulary unavailable: ")+error.what()+"\n");}
     }
+}
+
+seed::Ptr Shell::block(seed::Runtime& r, seed::Node* relation, seed::Ptr context) {
+    auto& shell = *static_cast<Shell*>(context);
+    auto terms = r.terms(relation);
+    if (!r.is_block(relation)) return relation;
+    // A leading string documents the block, as it documents a file.
+    std::size_t first = terms.size() > 2 && r.is_literal(terms[1]) ? 2 : 1;
+    seed::Ptr result = r.arena().unit();
+    for (std::size_t i = first; i < terms.size(); ++i) {
+        if (shell.host_.interrupted()) throw std::runtime_error("Seed block interrupted");
+        result = r.demand(terms[i]);
+        if (i + 1 == terms.size()) break;
+        ProcessResult process;
+        bool failed = ProcessHost::unpack(r, result, process) && process.status != 0;
+        shell.present(result);
+        if (failed)
+            throw std::runtime_error("block line " + std::to_string(i - first + 1) + " (" + r.print(terms[i]) +
+                                     ") returned status " + std::to_string(process.status));
+    }
+    return result;
 }
 
 bool Shell::prefer_script(std::string_view name) {

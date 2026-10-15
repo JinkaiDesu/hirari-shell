@@ -60,6 +60,12 @@ These are different values and operations:
 | `a () b`, `b : a` | The separate abstraction/capture mirror. |
 | `greeting := "hello"` | Bind the RHS form to greeting. |
 | `"hello" = greeting` | The same binding, with the expression first. |
+| `[1 2 3]` | A list; each element evaluated once. |
+| `3 - 3`, `2 * x + 1` | Arithmetic, written with spaces (`-3` stays a number). |
+| `a < b`, `a >= b`, `a == b` | Comparison (`< <= > >= == !=`). |
+| `expr =>` | One reduction step, reified, without running effects. |
+| `{ a \| b > "out" }` | Live process streams: `\|`, `<`, `>`, `>>`. |
+| `(` at line end | A line block: its lines run as statements. |
 
 Names use `-name`; attached `:name` is no longer Name syntax. Colon constructs
 abstractions regardless of adjacent spaces. Names are not converted to literals
@@ -98,9 +104,10 @@ python -c "print('z'); print('a')" | sort
 
 `consumer producer`, `consumer(producer)` and `producer | consumer` are one
 Seed application: the producer's completed answer becomes a native consumer's
-stdin. `{ producer | consumer }` is the POSIX pipeline context: native stages
-run concurrently over OS pipes and stream as they produce, and
-`consumer {pipeline}` feeds a consumer live. Interactive foreground programs use
+stdin. `{ producer | consumer }` is the POSIX stream context: native stages
+run concurrently over OS pipes and stream as they produce, `consumer {pipeline}`
+feeds a consumer live, and `{ sort < "in.txt" > "out.txt" }` redirects stdin
+and stdout. Outside braces `<` and `>` compare values. Interactive foreground programs use
 ConPTY with raw input forwarding, resize and interrupt support. `exit` and `quit`
 end the shell.
 
@@ -153,18 +160,22 @@ WorldHost handles descriptor validation, selected roots and launch rollback.
 
 ## Current regression suite
 
-CTest registers eight production targets:
+CTest registers ten production targets, plus four when the deferred experiment and Lean proofs are enabled (`-DSEED_DEFERRED_EXPERIMENT=ON -DSEED_LEAN_PROOFS=ON`):
 
 | Test | Coverage |
 | --- | --- |
-| `seed_semantics` | Reader/printer round trips; application and capture mirrors; binding orientation, lazy effects and stable cells; provider demand; comments and continuation. |
+| `seed_semantics` | Reader/printer round trips; application and capture mirrors; binding orientation, lazy effects and stable cells; provider demand; comments and continuation; operators and arithmetic; `=>` steps; line blocks; list literals. |
 | `hirari_capabilities` | Linked PCRE2, structured predicate snapshots, inert provider identities, registration and non-executing help. |
-| `hirari_shell_completion` | Foreground shell lifecycle, interruption and completion behavior. |
-| `hirari_integration` | Neutral world/script validation and rollback; child environment; Unicode argv/files; control forms; live pipes; exit/quit. |
+| `hirari_shell_completion` | Foreground shell lifecycle, interruption, completion, help and durable vocabulary. |
+| `hirari_shell_supervision` | Startup programs, status files, supervision and jobs in a live shell. |
+| `hirari_integration` | Neutral world/script validation and rollback; child environment; Unicode argv/files; control forms; live pipes and `{ }` redirection; line blocks; strict unknown programs; exit/quit. |
 | `hirari_host_capabilities` | Single evaluation, typed collection iteration, exact numbers, foreign reference ownership, optional library registration, jobs, progress, cancellation, timeouts, staleness and caching. |
 | `hirari_eval_name` | CLI preserves a Name. |
 | `hirari_eval_failure` | Missing program returns nonzero. |
 | `hirari_cli_usage` | Invalid CLI options return nonzero. |
+| `hirari_cli_version` | `hirari --version` reports the project version. |
+| `seed_semantics_deferred`, `seed_deferred_differential`, `hirari_shell_completion_deferred` | The experimental deferred-substitution reducer against the reference. |
+| `seed_lean_proofs` | Lean-checked substitution kernel and the shared conformance corpus on both reducers. |
 
 The native integration tests compile their own neutral process helper and provider. Their worlds are temporary neutral fixtures, and PATH is restricted to
 test binaries plus Windows system programs. They do not rely on developer

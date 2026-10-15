@@ -100,9 +100,9 @@ void pipeline_failures(Shell& shell,MemoryHost& host) {
     require(cancelled&&ProcessHost::unpack(cancellable.seed(),cancelled,p)&&p.status==130,"interrupt did not end the pipeline");
     DWORD pid=static_cast<DWORD>(std::stoul(p.out));
     require(!process_alive(pid),"interrupted pipeline left a stage running");
-    // {PIPELINE} > file: the last stage writes the file, beyond the capture budget.
+    // { PIPELINE > file }: the last stage writes the file, beyond the capture budget.
     Fixtures sink;auto output=sink.root/"piped.bin";
-    run("{hirari_test_program bulk | hirari_test_program relay} > "+quote(path_text(output)));
+    run("{hirari_test_program bulk | hirari_test_program relay > "+quote(path_text(output))+"}");
     require(std::filesystem::file_size(output)==20*1024*1024,"pipeline redirection buffered or truncated");
     // Braces continue across lines in a script; | elsewhere is unaffected.
     auto script=sink.root/"braced.seed";
@@ -173,16 +173,41 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program fail && missing_neutral_program"),p)&&p.status==7, "process AND demanded skipped branch");
     Fixtures routing;
     auto output=routing.root/text_path("routed 日本.bin");auto destination=quote(path_text(output));
-    run("hirari_test_program emit \"first\" > "+destination);
-    run("hirari_test_program emit \"last\" >> "+destination);
+    // Output redirection is a { } stream operator.
+    run("{hirari_test_program emit \"first\" > "+destination+"}");
+    run("{hirari_test_program emit \"last\" >> "+destination+"}");
     {std::ifstream file(output,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(file)),{});require(bytes=="first\nlast\n", "native redirection or append corrupted bytes");}
-    run("hirari_test_program bulk > "+destination);
+    run("{hirari_test_program bulk > "+destination+"}");
     require(std::filesystem::file_size(output)==20*1024*1024, "native redirection buffered into capture budget");
-    run("held > "+destination);
+    run("{held > "+destination+"}");
     run("data bind -routed (data read "+destination+")");
     require(shell.seed().print(run("data json routed"))==shell.seed().print(run("data json held")), "structured file sink flattened data");
-    run("\"a\" > "+destination);run("\"b\" >> "+destination);
+    run("{\"a\" > "+destination+"}");run("{\"b\" >> "+destination+"}");
     {std::ifstream file(output,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(file)),{});require(bytes=="ab", "literal redirection inserted formatting");}
+    // { CONSUMER < "file" }: the first stage reads stdin directly from a file.
+    {std::ofstream file(output,std::ios::binary);file<<"z\na\n";}
+    // ("sort" is quoted: a bare sort would name Windows' sort.exe as a producer.)
+    host.out.clear();run("{hirari_test_program \"sort\" < "+destination+"}");
+    require(host.out=="a\nz\n","{ < file } did not feed stdin");
+    require(ProcessHost::unpack(shell.seed(),run("data bind -sorted {hirari_test_program \"sort\" < "+destination+"}"),p)&&p.out=="a\nz\n",
+            "nested { < file } did not answer its output");
+    require(!shell.execute("{hirari_test_program emit \"x\" | hirari_test_program sort < "+destination+"}"),"< after | was accepted");
+    // Outside braces > and < compare values; >> has no meaning there.
+    require(shell.seed().print(run("5 > 3"))=="-true" && shell.seed().print(run("2 >= 3"))=="-false","> outside braces is not a comparison");
+    require(!shell.execute("\"x\" >> "+destination),">> outside braces was accepted");
+    // An unknown program fails wherever it is applied, not only at top level.
+    require(!shell.execute("data print (missing_neutral_program 1)"),"nested unknown program stayed inert");
+    // Line blocks run like a file: each line's result is shown, a failing line stops the block.
+    host.out.clear();
+    require(shell.seed().print(run("if -true (\n  hirari_test_program emit \"one\"\n  \"two\"\n) ()"))=="\"two\"" &&
+            host.out.find("one")!=std::string::npos, "block line output was not presented");
+    host.out.clear();
+    require(!shell.execute("(\n  hirari_test_program fail\n  hirari_test_program emit \"after\"\n)") && host.out.find("after")==std::string::npos,
+            "a failing block line did not stop the block");
+    run("data bind -n 0");run("data bind -total 0");
+    run("while (n < 4) (\n  data bind -total (total + n)\n  data bind -n (n + 1)\n)");
+    require(shell.seed().print(run("total"))=="6","while with a line block body did not iterate");
+    require(shell.seed().print(run("data at [10 20 30] 1"))=="20" && shell.seed().print(run("data size []"))=="0","list literal did not reach data");
     // Application and | are Seed application: the producer completes and its
     // answer becomes stdin. Only the { } context joins live OS pipes.
     for (auto source : {"hirari_test_program stamped | hirari_test_program latency",

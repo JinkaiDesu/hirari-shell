@@ -5,6 +5,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -31,9 +32,14 @@ std::size_t continuation_width(std::string_view source, std::size_t pos) {
 }
 
 // The reader, continuation prompt and script form scanner share layout rules.
-TriviaStatus skip_trivia(std::string_view source, std::size_t& pos) {
+// `newline` reports a physical line break that is not a `\` continuation and
+// not inside a bracket comment: the statement separator of files and blocks.
+TriviaStatus skip_trivia(std::string_view source, std::size_t& pos, bool* newline = nullptr) {
     while (pos < source.size()) {
-        if (std::isspace(static_cast<unsigned char>(source[pos]))) { ++pos; continue; }
+        if (std::isspace(static_cast<unsigned char>(source[pos]))) {
+            if (newline && source[pos] == '\n') *newline = true;
+            ++pos; continue;
+        }
         if (auto width = continuation_width(source, pos)) {
             pos += width;
             while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t')) ++pos;
@@ -57,14 +63,22 @@ TriviaStatus skip_trivia(std::string_view source, std::size_t& pos) {
     return TriviaStatus::Complete;
 }
 
+// Reserved heads the reader lowers to. Each contains a delimiter, so source
+// can never spell them as ordinary symbols.
+constexpr std::string_view block_head = "(;)";
+constexpr std::string_view list_head = "[]";
+
+constexpr std::pair<const char*, const char*> operator_names[] = {
+    {"<", "lt"}, {"<=", "le"}, {">", "gt"}, {">=", "ge"}, {"==", "eq"}, {"!=", "ne"},
+    {"|", "pipe"}, {"=", "bind"}, {"&&", "and"}, {"||", "or"}};
+
 std::string name_spelling(Symbol* symbol) {
-    for (auto pair : {std::pair{"<", "lt"}, {"<=", "le"}, {"|", "pipe"},
-                      {"=", "bind"}, {"&&", "and"}, {"||", "or"}})
+    for (auto pair : operator_names)
         if (symbol->text == pair.first) return "-" + std::string(pair.second);
     // Explicit grouping preserves a raw identity that happens to spell an
     // operator alias, including provider field names and ordinary bindings.
-    for (auto spelling : {"lt", "le", "pipe", "bind", "and", "or"})
-        if (symbol->text == spelling) return "-(" + symbol->text + ")";
+    for (auto pair : operator_names)
+        if (symbol->text == pair.second) return "-(" + symbol->text + ")";
     if (!symbol->text.empty() && (std::isalpha(static_cast<unsigned char>(symbol->text[0])) ||
         static_cast<unsigned char>(symbol->text[0]) >= 128 || symbol->text[0] == '_'))
         return "-" + symbol->text;
@@ -72,9 +86,8 @@ std::string name_spelling(Symbol* symbol) {
 }
 
 Symbol* named_operation(Runtime& runtime, std::string_view spelling) {
-    for (auto pair : {std::pair{"lt", "<"}, {"le", "<="}, {"pipe", "|"},
-                      {"bind", "="}, {"and", "&&"}, {"or", "||"}})
-        if (spelling == pair.first) return runtime.intern(pair.second);
+    for (auto pair : operator_names)
+        if (spelling == pair.second) return runtime.intern(pair.first);
     return runtime.intern(spelling);
 }
 
@@ -93,14 +106,29 @@ bool is_symbol_text(
             text;
 }
 
+// Operator dispatch order. The first operator present in a product owns the
+// whole product, so earlier entries bind loosest: binding, one reduction step,
+// short circuit, comparison, reverse application, then arithmetic.
+constexpr const char* orientation_order[] = {
+    ":=", "=", "=>", "&&", "||", "==", "!=", "<", "<=", ">", ">=", ">>", "|",
+    "+", "-", "*", "/", ":"};
+
+bool is_orientation_text(std::string_view text) {
+    for (auto spelling : orientation_order) if (text == spelling) return true;
+    return false;
+}
+
+bool is_comparison_text(std::string_view t) {
+    return t == "<" || t == "<=" || t == ">" || t == ">=" || t == "==" || t == "!=";
+}
+
+bool is_arithmetic_text(std::string_view t) {
+    return t == "+" || t == "-" || t == "*" || t == "/";
+}
+
 bool has_orientation(const Runtime& runtime, const std::vector<Ptr>& forms) {
-    for (Ptr form : forms) {
-        if (!runtime.is_symbol(form)) continue;
-        const auto& text = static_cast<Symbol*>(form)->text;
-        if (text == ":=" || text == "=" || text == "&&" || text == "||" ||
-            text == ">" || text == ">>" || text == "<" || text == "<=" ||
-            text == "|" || text == ":") return true;
-    }
+    for (Ptr form : forms)
+        if (runtime.is_symbol(form) && is_orientation_text(static_cast<Symbol*>(form)->text)) return true;
     return false;
 }
 
@@ -163,6 +191,10 @@ bool abstraction_view(const Runtime& runtime, RelationSlice slice, AbstractionVi
     auto third = next_term(second);
     if (third == slice.end) return false;
     if (runtime.is_unit(second->head)) {
+        // A registered Program is never a binder: `if () a b` calls if with a
+        // Unit condition, and the reserved block/list heads stay products.
+        if (runtime.is_symbol(first->head) && runtime.registry().find(runtime.as_symbol(first->head)))
+            return false;
         view = {binder_identity(runtime, first->head), {third, slice.end}, true};
         return view.binder != nullptr;
     }
@@ -245,11 +277,7 @@ struct PendingSubstitution { Ptr binder; Ptr replacement; };
 bool stable_curry_argument(const Runtime& runtime, Ptr value) {
     if (!value || runtime.is_relation(value) || runtime.is_unit(value) ||
         runtime.is_literal(value)) return false;
-    if (runtime.is_symbol(value)) {
-        const auto& text = runtime.as_symbol(value)->text;
-        for (auto glyph : {":=", "=", "&&", "||", ">", ">>", "<", "<=", "|", ":"})
-            if (text == glyph) return false;
-    }
+    if (runtime.is_symbol(value) && is_orientation_text(runtime.as_symbol(value)->text)) return false;
     return true;
 }
 
@@ -701,41 +729,404 @@ Ptr program_boolean(Runtime& runtime, Node* relation, Ptr) {
     return relation;
 }
 
-Ptr program_compare(Runtime& runtime, Node* relation, Ptr) {
-    auto terms = runtime.terms(relation);
-    auto comparison = [&](Ptr p) {
-        return is_symbol_text(runtime, p, "<") || is_symbol_text(runtime, p, "<=");
+// -----------------------------------------------------------------------------
+// Operators: comparison, arithmetic, one reduction step
+// -----------------------------------------------------------------------------
+//
+// An operator is a standalone symbol. Attached spellings keep their meaning:
+// -3 is a number, -foo a Name, *cell reads a cell. So (3 - 3) is 0 while
+// (3 -3) is the product of 3 and -3.
+
+struct OperatorCall {
+    Ptr op = nullptr;
+    Ptr left = nullptr;   // unevaluated operand forms
+    Ptr right = nullptr;  // nullptr for unary minus
+    bool prefix = false;
+};
+
+// Find the operator of one precedence class that owns this product: the
+// rightmost infix occurrence (left associativity), or a prefix spelling.
+bool split_operator(Runtime& runtime, const std::vector<Ptr>& terms,
+                    bool (*member)(std::string_view), OperatorCall& call) {
+    auto is_member = [&](Ptr p) {
+        return runtime.is_symbol(p) && member(runtime.as_symbol(p)->text);
     };
-    if (!comparison(terms.front()) && (terms.size() < 2 || !comparison(terms[1]))) return relation;
-    if (terms.size() != 3) throw std::runtime_error("comparison expects two operands; group compound operands");
-    Ptr op = comparison(terms.front()) ? terms[0] : terms[1];
-    Ptr left = demand_program_form(runtime, comparison(terms.front()) ? terms[1] : terms[0]);
-    Ptr right = demand_program_form(runtime, terms[2]);
-    int order;
+    if (terms.empty()) return false;
+    for (std::size_t i = terms.size() - 1; i >= 1; --i) {
+        if (!is_member(terms[i]) || i + 1 >= terms.size()) continue;
+        // An operator directly after another is not infix (e.g. a - - b).
+        if (runtime.is_symbol(terms[i - 1]) && is_orientation_text(runtime.as_symbol(terms[i - 1])->text)) continue;
+        call = {terms[i],
+                runtime.product(std::vector<Ptr>(terms.begin(), terms.begin() + static_cast<std::ptrdiff_t>(i))),
+                runtime.product(std::vector<Ptr>(terms.begin() + static_cast<std::ptrdiff_t>(i) + 1, terms.end())),
+                false};
+        return true;
+    }
+    if (is_member(terms.front())) {
+        if (terms.size() == 3) { call = {terms[0], terms[1], terms[2], true}; return true; }
+        if (terms.size() == 2) { call = {terms[0], terms[1], nullptr, true}; return true; }
+    }
+    return false;
+}
+
+bool is_value_form(const Runtime& runtime, Ptr p) {
+    return runtime.is_number(p) || runtime.is_literal(p) || runtime.is_name(p) ||
+           runtime.is_unit(p) || runtime.is_cell(p);
+}
+
+Ptr truth_name(Runtime& runtime, bool value) {
+    return runtime.arena().make_name(runtime.intern(value ? "true" : "false"));
+}
+
+// -1/0/1 for two numbers or two strings; nullopt when the kinds differ.
+std::optional<int> scalar_order(Runtime& runtime, Ptr left, Ptr right) {
     if (runtime.is_number(left) && runtime.is_number(right)) {
         auto a = runtime.as_number(left), b = runtime.as_number(right);
         bool ai = runtime.arena().is(left, HostKind::Integer), bi = runtime.arena().is(right, HostKind::Integer);
-        if (ai && bi) order = (a->integer > b->integer) - (a->integer < b->integer);
-        else if (!ai && !bi) order = (a->real > b->real) - (a->real < b->real);
+        if (ai && bi) return (a->integer > b->integer) - (a->integer < b->integer);
+        if (!ai && !bi) return (a->real > b->real) - (a->real < b->real);
+        auto integer = ai ? a->integer : b->integer;
+        auto real = ai ? b->real : a->real;
+        // Preserve exact int64 ordering at the double precision boundary.
+        int mixed;
+        if (real >= 9223372036854775808.0) mixed = -1;
+        else if (real < -9223372036854775808.0) mixed = 1;
         else {
-            auto integer = ai ? a->integer : b->integer;
-            auto real = ai ? b->real : a->real;
-            // Preserve exact int64 ordering at the double precision boundary.
-            int mixed;
-            if (real >= 9223372036854775808.0) mixed = -1;
-            else if (real < -9223372036854775808.0) mixed = 1;
-            else {
-                auto whole = static_cast<std::int64_t>(real);
-                mixed = (integer > whole) - (integer < whole);
-                if (!mixed) mixed = (static_cast<double>(whole) > real) - (static_cast<double>(whole) < real);
-            }
-            order = ai ? mixed : -mixed;
+            auto whole = static_cast<std::int64_t>(real);
+            mixed = (integer > whole) - (integer < whole);
+            if (!mixed) mixed = (static_cast<double>(whole) > real) - (static_cast<double>(whole) < real);
         }
-    } else if (runtime.is_literal(left) && runtime.is_literal(right)) {
-        order = runtime.as_literal(left)->bytes.compare(runtime.as_literal(right)->bytes);
-    } else throw std::runtime_error("ordering requires two numbers or two strings; domain ordering belongs to its provider");
-    bool result = order < 0 || (is_symbol_text(runtime, op, "<=") && order == 0);
-    return runtime.arena().make_name(runtime.intern(result ? "true" : "false"));
+        return ai ? mixed : -mixed;
+    }
+    if (runtime.is_literal(left) && runtime.is_literal(right)) {
+        auto order = runtime.as_literal(left)->bytes.compare(runtime.as_literal(right)->bytes);
+        return (order > 0) - (order < 0);
+    }
+    return std::nullopt;
+}
+
+bool same_value(Runtime& runtime, Ptr left, Ptr right) {
+    if (left == right) return true;
+    if (auto order = scalar_order(runtime, left, right)) return *order == 0;
+    if (runtime.is_name(left) && runtime.is_name(right)) {
+        Ptr a = runtime.as_name(left)->target, b = runtime.as_name(right)->target;
+        if (a == b) return true;
+        return runtime.is_relation(a) && runtime.is_relation(b) && runtime.structural(a) == runtime.structural(b);
+    }
+    return false;
+}
+
+Ptr compare_values(Runtime& runtime, std::string_view op, Ptr left, Ptr right) {
+    if (op == "==") return truth_name(runtime, same_value(runtime, left, right));
+    if (op == "!=") return truth_name(runtime, !same_value(runtime, left, right));
+    auto order = scalar_order(runtime, left, right);
+    if (!order)
+        throw std::runtime_error("ordering requires two numbers or two strings; domain ordering belongs to its provider");
+    bool result = op == "<" ? *order < 0 : op == "<=" ? *order <= 0 : op == ">" ? *order > 0 : *order >= 0;
+    return truth_name(runtime, result);
+}
+
+Ptr make_integer(Runtime& runtime, std::int64_t value) {
+    return runtime.arena().make_number(std::to_string(value));
+}
+
+Ptr make_real(Runtime& runtime, double value) {
+    if (!std::isfinite(value)) throw std::runtime_error("arithmetic result is not a finite number");
+    char buffer[64];
+    auto written = std::to_chars(buffer, buffer + sizeof(buffer), value);
+    std::string spelling(buffer, written.ptr);
+    if (spelling.find_first_of(".eE") == std::string::npos) spelling += ".0";
+    return runtime.arena().make_number(spelling);
+}
+
+double real_of(Runtime& runtime, Ptr number) {
+    auto n = runtime.as_number(number);
+    return runtime.arena().is(number, HostKind::Integer) ? static_cast<double>(n->integer) : n->real;
+}
+
+Ptr arithmetic_values(Runtime& runtime, std::string_view op, Ptr left, Ptr right) {
+    if (!right) { // unary minus
+        if (!runtime.is_number(left)) throw std::runtime_error("- negates a number");
+        if (runtime.arena().is(left, HostKind::Integer)) {
+            auto v = runtime.as_number(left)->integer;
+            if (v == INT64_MIN) throw std::runtime_error("integer overflow");
+            return make_integer(runtime, -v);
+        }
+        return make_real(runtime, -runtime.as_number(left)->real);
+    }
+    if (op == "+" && runtime.is_literal(left) && runtime.is_literal(right))
+        return runtime.arena().make_literal(runtime.as_literal(left)->bytes + runtime.as_literal(right)->bytes);
+    if (!runtime.is_number(left) || !runtime.is_number(right))
+        throw std::runtime_error(std::string(op) + " requires two numbers" + (op == "+" ? " or two strings" : ""));
+    bool integers = runtime.arena().is(left, HostKind::Integer) && runtime.arena().is(right, HostKind::Integer);
+    if (integers) {
+        auto a = runtime.as_number(left)->integer, b = runtime.as_number(right)->integer;
+        auto overflow = [] { return std::runtime_error("integer overflow"); };
+        if (op == "+") {
+            if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) throw overflow();
+            return make_integer(runtime, a + b);
+        }
+        if (op == "-") {
+            if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b)) throw overflow();
+            return make_integer(runtime, a - b);
+        }
+        if (op == "*") {
+            if (a != 0 && b != 0) {
+                if ((a == -1 && b == INT64_MIN) || (b == -1 && a == INT64_MIN)) throw overflow();
+                auto product = a * b;  // checked below by division
+                if (product / b != a) throw overflow();
+                return make_integer(runtime, product);
+            }
+            return make_integer(runtime, 0);
+        }
+        if (b == 0) throw std::runtime_error("division by zero");
+        if (a == INT64_MIN && b == -1) throw overflow();
+        // Exact division stays an integer; otherwise the quotient is real.
+        if (a % b == 0) return make_integer(runtime, a / b);
+        return make_real(runtime, static_cast<double>(a) / static_cast<double>(b));
+    }
+    double a = real_of(runtime, left), b = real_of(runtime, right);
+    if (op == "+") return make_real(runtime, a + b);
+    if (op == "-") return make_real(runtime, a - b);
+    if (op == "*") return make_real(runtime, a * b);
+    if (b == 0) throw std::runtime_error("division by zero");
+    return make_real(runtime, a / b);
+}
+
+bool additive_member(std::string_view t) { return t == "+" || t == "-"; }
+bool multiplicative_member(std::string_view t) { return t == "*" || t == "/"; }
+
+Ptr program_head(Runtime& runtime, Node* relation, Ptr);
+
+Ptr program_arithmetic(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    OperatorCall call;
+    // Prefix * is the cell read (* name); only infix * multiplies.
+    if (is_symbol_text(runtime, terms.front(), "*")) return program_head(runtime, relation, nullptr);
+    if (!split_operator(runtime, terms, additive_member, call) &&
+        !split_operator(runtime, terms, multiplicative_member, call)) return relation;
+    auto op = runtime.as_symbol(call.op)->text;
+    if (!call.right && op != "-") return relation;
+    if (call.prefix && op == "*") return relation;
+    Ptr left = demand_program_form(runtime, call.left);
+    Ptr right = call.right ? demand_program_form(runtime, call.right) : nullptr;
+    return arithmetic_values(runtime, op, left, right);
+}
+
+Ptr program_compare(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    OperatorCall call;
+    if (!split_operator(runtime, terms, is_comparison_text, call) || !call.right) {
+        for (Ptr term : terms)
+            if (runtime.is_symbol(term) && is_comparison_text(runtime.as_symbol(term)->text) && terms.size() > 1)
+                throw std::runtime_error("comparison requires both operands: A < B or < A B");
+        return relation;
+    }
+    std::size_t count = 0;
+    for (Ptr term : terms)
+        if (runtime.is_symbol(term) && is_comparison_text(runtime.as_symbol(term)->text)) ++count;
+    if (count > 1) throw std::runtime_error("chained comparisons are not supported; join them with && or ||");
+    Ptr left = demand_program_form(runtime, call.left);
+    Ptr right = demand_program_form(runtime, call.right);
+    return compare_values(runtime, runtime.as_symbol(call.op)->text, left, right);
+}
+
+Ptr program_append_outside_braces(Runtime& runtime, Node* relation, Ptr) {
+    for (Ptr term : runtime.terms(relation))
+        if (is_symbol_text(runtime, term, ">>"))
+            throw std::runtime_error(">> appends output only inside { }: { PRODUCER >> \"file\" }");
+    return relation;
+}
+
+// -----------------------------------------------------------------------------
+// => : one reduction step
+// -----------------------------------------------------------------------------
+//
+// EXPR => advances EXPR by exactly one step of the reducer's own order and
+// returns the resulting form reified, so it is not reduced further. Steps are
+// mathematical: orienting |, normalizing a colon abstraction, unfolding a
+// binding, beta-substituting an argument, or computing an arithmetic or
+// comparison operator on values. Invoking any other Program (builtins, native
+// processes, pipelines, bindings, blocks) is an effect: => stops before it and
+// says which, instead of running it.
+
+struct Step {
+    enum Kind { Normal, Reduced, Effect } kind = Normal;
+    Ptr form = nullptr;
+    std::string note;
+};
+
+Step step_form(Runtime& runtime, Ptr form);
+
+Step step_operator(Runtime& runtime, Ptr form, std::string_view spelling) {
+    auto terms = runtime.terms(runtime.as_node(form));
+    if (spelling == ":=" || spelling == "=") return {Step::Effect, form, "binding a name"};
+    if (spelling == "=>") return {Step::Effect, form, "a nested =>"};
+    if (spelling == "&&" || spelling == "||") return {Step::Effect, form, "short-circuit " + std::string(spelling) + " evaluates its operands"};
+    if (spelling == ">>") return {Step::Effect, form, ">> outside { }"};
+    if (spelling == ":") return {Step::Normal, form, {}};  // abstractions are handled by shape
+    if (spelling == "|") {
+        std::vector<Ptr> stages;
+        Ptr oriented = runtime.flow(runtime.as_node(form), stages);
+        if (oriented != form) return {Step::Reduced, oriented, "orient |"};
+        return {Step::Normal, form, {}};
+    }
+    OperatorCall call;
+    bool comparison = is_comparison_text(spelling);
+    if (spelling == "*" && is_symbol_text(runtime, terms.front(), "*"))
+        return {Step::Effect, form, "reading a binding cell"};
+    bool found = comparison ? split_operator(runtime, terms, is_comparison_text, call)
+                            : (split_operator(runtime, terms, additive_member, call) ||
+                               split_operator(runtime, terms, multiplicative_member, call));
+    if (!found) return {Step::Normal, form, {}};
+    auto op = runtime.as_symbol(call.op)->text;
+    auto rebuild = [&](Ptr left, Ptr right) {
+        if (call.prefix) return right ? runtime.product({call.op, left, right}) : runtime.product({call.op, left});
+        return runtime.product({left, call.op, right});
+    };
+    // Operands reduce left to right, one step at a time.
+    if (!is_value_form(runtime, call.left)) {
+        auto inner = step_form(runtime, call.left);
+        if (inner.kind == Step::Reduced) return {Step::Reduced, rebuild(inner.form, call.right), inner.note};
+        return {inner.kind == Step::Effect ? Step::Effect : Step::Normal, form, inner.note};
+    }
+    if (call.right && !is_value_form(runtime, call.right)) {
+        auto inner = step_form(runtime, call.right);
+        if (inner.kind == Step::Reduced) return {Step::Reduced, rebuild(call.left, inner.form), inner.note};
+        return {inner.kind == Step::Effect ? Step::Effect : Step::Normal, form, inner.note};
+    }
+    Ptr value = comparison ? compare_values(runtime, op, call.left, call.right)
+                           : arithmetic_values(runtime, op, call.left, call.right);
+    return {Step::Reduced, value, "compute " + op};
+}
+
+Step step_form(Runtime& runtime, Ptr form) {
+    if (runtime.is_symbol(form)) {
+        auto symbol = runtime.as_symbol(form);
+        if (Ptr bound = runtime.binding(symbol)) return {Step::Reduced, bound, "unfold " + symbol->text};
+        if (runtime.resolve_program(symbol)) return {Step::Effect, form, "running program " + symbol->text};
+        return {Step::Normal, form, {}};
+    }
+    if (!runtime.is_relation(form)) return {Step::Normal, form, {}};
+    if (runtime.pipeline_body(form)) return {Step::Effect, form, "running a { } pipeline"};
+    auto node = runtime.as_node(form);
+    if (is_symbol_text(runtime, node->head, block_head)) return {Step::Effect, form, "running a line block"};
+    if (is_symbol_text(runtime, node->head, list_head)) return {Step::Effect, form, "building a list"};
+    AbstractionView view;
+    if (abstraction_view(runtime, {node, nullptr}, view)) {
+        if (!view.canonical)
+            return {Step::Reduced, runtime.product({view.binder, runtime.arena().unit(), slice_product(runtime, view.body)}),
+                    "normalize :"};
+        return {Step::Normal, form, {}};
+    }
+    auto terms = runtime.terms(node);
+    // Same dispatch order as the reducer: each present operator may own it.
+    if (has_orientation(runtime, terms)) {
+        for (auto spelling : orientation_order) {
+            if (std::none_of(terms.begin(), terms.end(), [&](Ptr term) { return is_symbol_text(runtime, term, spelling); }))
+                continue;
+            auto step = step_operator(runtime, form, spelling);
+            if (step.kind != Step::Normal) return step;
+        }
+    }
+    Ptr first = terms.front();
+    if (runtime.is_symbol(first)) {
+        auto symbol = runtime.as_symbol(first);
+        Ptr expanded = runtime.application(form);
+        if (expanded != form) return {Step::Reduced, expanded, "unfold " + symbol->text};
+        if (runtime.resolve_program(symbol)) return {Step::Effect, form, "running program " + symbol->text};
+        return {Step::Normal, form, {}};
+    }
+    if (runtime.is_relation(first) && terms.size() >= 2) {
+        Ptr binder = nullptr, body = nullptr;
+        if (runtime.abstraction(first, binder, body)) {
+            if (runtime.is_relation(body)) {
+                auto leading = static_cast<Node*>(body);
+                if (leading->ref && runtime.is_literal(leading->head))
+                    body = slice_product(runtime, {next_term(leading), nullptr});
+            }
+            Ptr result = runtime.substitute(body, binder, terms[1]);
+            for (std::size_t i = 2; i < terms.size(); ++i) result = runtime.compose(result, terms[i]);
+            return {Step::Reduced, result, "apply abstraction"};
+        }
+        auto inner = step_form(runtime, first);
+        if (inner.kind != Step::Reduced) return {inner.kind, form, inner.note};
+        Ptr result = inner.form;
+        for (std::size_t i = 1; i < terms.size(); ++i) result = runtime.compose(result, terms[i]);
+        return {Step::Reduced, result, inner.note};
+    }
+    return {Step::Normal, form, {}};
+}
+
+Ptr program_redux(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    std::size_t steps = 0;
+    std::vector<Ptr> operand;
+    bool seen_operand = false, trailing = false;
+    for (Ptr term : terms) {
+        if (is_symbol_text(runtime, term, "=>")) { ++steps; if (seen_operand) trailing = true; continue; }
+        if (trailing) throw std::runtime_error("=> steps the whole expression: write EXPR => (or => EXPR)");
+        operand.push_back(term);
+        seen_operand = true;
+    }
+    if (!steps) return relation;
+    if (operand.empty()) throw std::runtime_error("=> needs an expression to step");
+    Ptr form = runtime.product(std::move(operand));
+    // Continue from a reified step result, from an expression or a binding.
+    auto reified = [&](Ptr p) -> Ptr {
+        return runtime.is_name(p) && runtime.is_relation(runtime.as_name(p)->target) ? runtime.as_name(p)->target : nullptr;
+    };
+    if (Ptr reified_form = reified(form)) form = reified_form;
+    else if (runtime.is_symbol(form)) {
+        if (Ptr bound = runtime.binding(runtime.as_symbol(form)); bound && reified(bound)) form = reified(bound);
+    } else if (runtime.is_relation(form) && has_orientation(runtime, runtime.terms(runtime.as_node(form)))) {
+        for (Ptr term : runtime.terms(runtime.as_node(form)))
+            if (is_symbol_text(runtime, term, "=>")) {
+                if (Ptr earlier = reified(runtime.reduce(form))) form = earlier;
+                break;
+            }
+    }
+    for (std::size_t i = 0; i < steps; ++i) {
+        auto step = step_form(runtime, form);
+        if (step.kind == Step::Effect)
+            throw std::runtime_error("=> stops before an effect (" + step.note + "): " + runtime.print(form) +
+                                     "; demand it with ? to run it");
+        if (step.kind == Step::Normal) break;
+        form = step.form;
+    }
+    return runtime.arena().make_name(form);
+}
+
+// -----------------------------------------------------------------------------
+// Line blocks and lists
+// -----------------------------------------------------------------------------
+//
+// A group whose ( ends its line reads its lines as statements, as a file does,
+// and lowers to ((;) STATEMENT ...). It runs them in order in the enclosing
+// scope and answers the last value; a leading string is documentation.
+// [a b c] lowers to ([] a b c) and evaluates each element once, like
+// data list.
+
+Ptr program_block(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    if (!is_symbol_text(runtime, terms.front(), block_head)) return relation;
+    std::size_t first = terms.size() > 2 && runtime.is_literal(terms[1]) ? 2 : 1;
+    Ptr result = runtime.arena().unit();
+    for (std::size_t i = first; i < terms.size(); ++i) result = demand_program_form(runtime, terms[i]);
+    return result;
+}
+
+Ptr list_value(Runtime& runtime, std::vector<Ptr> elements) {
+    return runtime.arena().make_name(runtime.product({runtime.arena().make_name(runtime.intern("list")),
+                                                      runtime.arena().make_name(runtime.product(std::move(elements)))}));
+}
+
+Ptr program_list(Runtime& runtime, Node* relation, Ptr) {
+    auto terms = runtime.terms(relation);
+    if (!is_symbol_text(runtime, terms.front(), list_head)) return relation;
+    std::vector<Ptr> elements;
+    for (std::size_t i = 1; i < terms.size(); ++i) elements.push_back(runtime.reduce(terms[i]));
+    return list_value(runtime, std::move(elements));
 }
 
 Ptr program_for(Runtime& runtime, Node* relation, Ptr) {
@@ -1163,8 +1554,8 @@ bool Reader::source_complete(std::string_view source) {
                 }
             }
             if (!closed) return false;
-        } else if (c == '(' || c == '{') ++depth;
-        else if ((c == ')' || c == '}') && --depth < 0) return true; // Reader diagnoses invalid input.
+        } else if (c == '(' || c == '{' || c == '[') ++depth;
+        else if ((c == ')' || c == '}' || c == ']') && --depth < 0) return true; // Reader diagnoses invalid input.
     }
     return depth == 0;
 }
@@ -1238,11 +1629,15 @@ Ptr Reader::read_form() {
     Ptr form;
     if ((peek() == '@' || peek() == '*') && peek(1) != '\0' &&
         !std::isspace(static_cast<unsigned char>(peek(1))) && peek(1) != ')' && peek(1) != '}' &&
-        peek(1) != '#' && peek(1) != '?' && continuation_width(source_, pos_ + 1) == 0) {
+        peek(1) != ']' && peek(1) != '#' && peek(1) != '?' && continuation_width(source_, pos_ + 1) == 0) {
         auto prefix = std::string(1, take());
         form = runtime_.product({runtime_.intern(prefix), read_form()});
     } else if (peek() == '(') {
         form = read_group();
+    } else if (peek() == '[') {
+        form = read_list();
+    } else if (peek() == ']') {
+        throw std::runtime_error("unexpected ']'");
     } else if (peek() == '{') {
         form = read_pipeline();
     } else if (peek() == '-' && (peek(1) == '(' || peek(1) == '{' ||
@@ -1284,6 +1679,8 @@ Ptr Reader::read_group() {
                 .unit();
     }
 
+    if (opens_line_block()) return read_line_block();
+
     Ptr inside =
         read_sequence(')');
 
@@ -1297,6 +1694,57 @@ Ptr Reader::read_group() {
     }
 
     return inside;
+}
+
+// A ( that ends its physical line (after spaces, tabs or a line comment)
+// opens a line block. A group that starts on the same line stays one
+// expression whose newlines are whitespace.
+bool Reader::opens_line_block() const {
+    std::size_t p = pos_;
+    while (p < source_.size() && (source_[p] == ' ' || source_[p] == '\t' || source_[p] == '\r')) ++p;
+    if (p < source_.size() && source_[p] == '#' && (p + 1 == source_.size() || source_[p + 1] != '['))
+        while (p < source_.size() && source_[p] != '\n') ++p;
+    return p < source_.size() && source_[p] == '\n';
+}
+
+// Lines are statements, with the file rules: a newline ends a statement,
+// a trailing \ or an open group continues it, and a line starting with |
+// (not ||) continues the previous one.
+Ptr Reader::read_line_block() {
+    std::vector<Ptr> statements{runtime_.intern(block_head)};
+    std::vector<Ptr> current;
+    auto flush = [&] {
+        if (!current.empty()) statements.push_back(runtime_.product(std::move(current)));
+        current.clear();
+    };
+    while (true) {
+        bool newline = false;
+        auto status = skip_trivia(source_, pos_, &newline);
+        if (status == TriviaStatus::OpenComment) throw std::runtime_error("unterminated bracket comment");
+        if (status == TriviaStatus::OpenContinuation) throw std::runtime_error("unterminated source continuation");
+        if (eof()) throw std::runtime_error("unterminated group");
+        if (peek() == ')') { take(); break; }
+        if (newline && !current.empty() && !(peek() == '|' && peek(1) != '|')) flush();
+        current.push_back(read_form());
+    }
+    flush();
+    if (statements.size() == 1) return runtime_.arena().unit();
+    if (statements.size() == 2) return statements[1];
+    return runtime_.arena().make_relation(statements);
+}
+
+// [a b c] lowers to ([] a b c); [] is the empty list.
+Ptr Reader::read_list() {
+    take();
+    std::vector<Ptr> forms{runtime_.intern(list_head)};
+    while (true) {
+        skip_space();
+        if (eof()) throw std::runtime_error("unterminated list: expected ']'");
+        if (peek() == ']') { take(); break; }
+        if (peek() == ')' || peek() == '}') throw std::runtime_error("expected ']'");
+        forms.push_back(read_form());
+    }
+    return runtime_.arena().make_relation(forms);
 }
 
 // `{ forms }` lowers to ({} (forms)): a reserved head over a nested body, so
@@ -1410,13 +1858,16 @@ std::string Reader::read_symbol_token() {
 
     // || is one identity; | | is two pipe identities. These are delimiters
     // even without surrounding spaces, as ordinary shell control operators are.
-    if (peek() == '|' || peek() == '>') {
+    if (peek() == '|') {
         token.push_back(take());
-        if (peek() == token[0]) token.push_back(take());
+        if (peek() == '|') token.push_back(take());
         return token;
     }
+    // > >> >=   < <=   = == =>   !=
+    if (peek() == '>') { token.push_back(take()); if (peek() == '>' || peek() == '=') token.push_back(take()); return token; }
     if (peek() == '<') { token.push_back(take()); if (peek() == '=') token.push_back(take()); return token; }
-    if (peek() == '=') { take(); return "="; }
+    if (peek() == '=') { token.push_back(take()); if (peek() == '=' || peek() == '>') token.push_back(take()); return token; }
+    if (peek() == '!' && peek(1) == '=') { take(); take(); return "!="; }
     if (peek() == '&' && peek(1) == '&') { take(); take(); return "&&"; }
 
     while (!eof()) {
@@ -1431,10 +1882,13 @@ std::string Reader::read_symbol_token() {
             c == ')' ||
             c == '{' ||
             c == '}' ||
+            c == '[' ||
+            c == ']' ||
             c == '"' ||
             c == ':' || c == '#' || c == '|' || c == '<' || c == '>' || c == '=' ||
             continuation_width(source_, pos_) != 0 ||
             (c == '&' && peek(1) == '&') ||
+            (c == '!' && peek(1) == '=') ||
             (c == '?' && !token.empty())
         ) {
             break;
@@ -1583,6 +2037,24 @@ std::string Printer::native_form(
         case HostKind::Node:
             if (Ptr body = runtime_.pipeline_body(form))
                 return runtime_.is_unit(body) ? "{}" : "{ " + native_relation(static_cast<Node*>(body)) + " }";
+            if (runtime_.is_block(form) || runtime_.is_list_form(form)) {
+                bool block = runtime_.is_block(form);
+                std::string out = block ? "(\n" : "[";
+                bool first = true;
+                for (Node* current = static_cast<Node*>(static_cast<Node*>(form)->ref); current;
+                     current = static_cast<Node*>(current->ref)) {
+                    Ptr term = current->head;
+                    bool nested = runtime_.is_relation(term) && !runtime_.pipeline_body(term) &&
+                                  !runtime_.is_block(term) && !runtime_.is_list_form(term);
+                    if (block) out += (nested ? native_relation(static_cast<Node*>(term)) : native_form(term)) + "\n";
+                    else {
+                        if (!first) out += ' ';
+                        out += nested ? "(" + native_relation(static_cast<Node*>(term)) + ")" : native_form(term);
+                    }
+                    first = false;
+                }
+                return out + (block ? ")" : "]");
+            }
             return
                 native_relation(
                     static_cast<Node*>(form)
@@ -1629,7 +2101,7 @@ std::string Printer::native_relation(
             out += ' ';
         }
 
-        if (runtime_.pipeline_body(form)) {
+        if (runtime_.pipeline_body(form) || runtime_.is_block(form) || runtime_.is_list_form(form)) {
             out += native_form(form);
         }
         else if (
@@ -1730,6 +2202,7 @@ std::string Printer::structural_member(
 
         case HostKind::Node:
             if (runtime_.pipeline_body(form)) return "(" + structural_form(form) + ")";
+            if (runtime_.is_block(form) || runtime_.is_list_form(form)) return native_form(form);
             return "(" +
                 structural_relation(
                     static_cast<Node*>(
@@ -1752,6 +2225,8 @@ std::string Printer::structural_form(
     ) {
         return "()";
     }
+
+    if (runtime_.is_block(form) || runtime_.is_list_form(form)) return native_form(form);
 
     if (Ptr body = runtime_.pipeline_body(form)) {
         if (runtime_.is_unit(body)) return "{}";
@@ -1911,6 +2386,13 @@ Ptr Reducer::reduce_relation(
 ) {
     Ptr binder = nullptr;
     Ptr body = nullptr;
+    // Reader-lowered blocks and lists belong to their own Program: their
+    // terms are statements or elements, never operators of this product.
+    if (is_symbol_text(runtime_, relation->head, block_head) ||
+        is_symbol_text(runtime_, relation->head, list_head)) {
+        Program program = runtime_.registry().find(runtime_.as_symbol(relation->head));
+        return program ? program.invoke(runtime_, relation, program.context) : relation;
+    }
     AbstractionView view;
     if (abstraction_view(runtime_, {relation, nullptr}, view)) {
         // An abstraction never demands its body or resolves its binder as a
@@ -1928,7 +2410,7 @@ Ptr Reducer::reduce_relation(
     // An ordinary application has no orientation Program to consult. If one
     // exists, retain the full dispatch order and recheck after every callback.
     if (has_orientation(runtime_, terms)) {
-        for (auto spelling : {":=", "=", "&&", "||", ">", ">>", "<", "<=", "|", ":"}) {
+        for (auto spelling : orientation_order) {
             for (Ptr term : terms) {
                 if (!is_symbol_text(runtime_, term, spelling)) continue;
                 Program program = runtime_.registry().find(runtime_.as_symbol(term));
@@ -1976,9 +2458,8 @@ Ptr Reducer::reduce_relation(
     // Lazy foreign resolution is restricted to its consumer/head position.
     for (Ptr term : runtime_.terms(relation)) {
         if (!runtime_.is_symbol(term)) continue;
-        auto spelling = runtime_.as_symbol(term)->text;
-        if (spelling == ":=" || spelling == "=" || spelling == "|" || spelling == ":" ||
-            spelling == "&&" || spelling == "||") continue;
+        // Operators were offered the product above, in precedence order.
+        if (is_orientation_text(runtime_.as_symbol(term)->text)) continue;
         Program program = runtime_.registry().find(runtime_.as_symbol(term));
         if (!program || program.dispatch != ProgramDispatch::Ordinary) continue;
         Ptr result = program.invoke(runtime_, relation, program.context);
@@ -1988,6 +2469,11 @@ Ptr Reducer::reduce_relation(
         runtime_.registry().find(runtime_.as_symbol(relation->head))) return relation;
     Program program = program_for(relation->head);
     if (program) return program.invoke(runtime_, relation, program.context);
+    // A shell host asks for applications of unknown programs to fail rather
+    // than silently becoming inert data, wherever they are nested.
+    if (runtime_.strict_heads() && runtime_.is_symbol(relation->head) &&
+        !runtime_.binding(runtime_.as_symbol(relation->head)))
+        throw std::runtime_error("program not found: " + runtime_.as_symbol(relation->head)->text);
 
     return relation;
 }
@@ -2002,6 +2488,16 @@ Ptr Runtime::compose(Ptr consumer, Ptr producer) {
 std::vector<Ptr> Runtime::collection(Ptr value, bool unquote_atom) {
     std::vector<Ptr> out;
     if (collection_resolver_ && collection_resolver_(*this, value, out, collection_context_)) return out;
+    // The structured list shape built by [ ... ] and data list.
+    if (is_name(value) && is_relation(as_name(value)->target)) {
+        auto fields = terms(as_node(as_name(value)->target));
+        if (fields.size() == 2 && is_name(fields[0]) && as_name(fields[0])->target == arena_.intern("list") &&
+            is_name(fields[1])) {
+            Ptr items = as_name(fields[1])->target;
+            if (is_unit(items)) return {};
+            return is_relation(items) ? terms(as_node(items)) : std::vector<Ptr>{items};
+        }
+    }
     if (is_name(value)) {
         Ptr target = as_name(value)->target;
         if (unquote_atom || is_relation(target) || is_unit(target)) value = target;
@@ -2050,8 +2546,33 @@ Runtime::Runtime()
     define("if", &program_if);
     define("&&", &program_boolean);
     define("||", &program_boolean);
-    define("<", &program_compare);
-    define("<=", &program_compare);
+    for (auto op : {"<", "<=", ">", ">=", "==", "!="}) define(op, &program_compare);
+    describe("<", "A < B | < A B\nStrict ordering of two numbers or two strings. -lt names this Program.");
+    describe("<=", "A <= B | <= A B\nOrdering or equal value of two numbers or two strings. -le names this Program.");
+    describe(">", "A > B | > A B\nGreater than, for two numbers or two strings. -gt names this Program. "
+             "Output redirection is written inside { }: { PRODUCER > \"file\" }.");
+    describe(">=", "A >= B | >= A B\nGreater than or equal, for two numbers or two strings. -ge names this Program.");
+    describe("==", "A == B | == A B\nEqual values: numbers by value, strings by bytes, Names by identity or "
+             "structure. Different kinds are unequal, not an error. -eq names this Program.");
+    describe("!=", "A != B | != A B\nNot equal: the negation of ==. -ne names this Program.");
+    for (auto op : {"+", "-", "/"}) define(op, &program_arithmetic);
+    define(">>", &program_append_outside_braces);
+    describe(">>", "{ PRODUCER >> \"file\" }\nAppend output to a file. Only meaningful inside { }.");
+    describe("+", "A + B | + A B\nAdd two numbers, or join two strings. Integers stay exact (overflow fails); "
+             "any real operand gives a real. Write the operator with spaces: (3 + 3).");
+    describe("-", "A - B | - A\nSubtract, or negate one number. Attached -3 is a number and -foo a Name, "
+             "so (3 - 3) is 0 while (3 -3) is the product 3 -3.");
+    describe("/", "A / B\nDivide. Exact integer division stays an integer; otherwise the quotient is real. "
+             "Dividing by zero fails.");
+    define("=>", &program_redux);
+    describe("=>", "EXPR => | => EXPR\nOne reduction step: orient |, normalize :, unfold a binding, substitute an "
+             "argument into an abstraction, or compute an operator on values. Answers the next form reified, "
+             "without evaluating further. Stops before an effect (a Program, process, pipeline, binding or "
+             "block) and names it; demand with ? to run it. EXPR => => takes two steps.");
+    define(std::string(block_head), &program_block);
+    define(std::string(list_head), &program_list);
+    describe(std::string(list_head), "[ELEMENT ...]\nA list: each element is evaluated once, like data list. [] is "
+             "the empty list.");
     define("for", &program_for);
     define(":=", &program_bind);
     define("|", &program_flow);
@@ -2074,10 +2595,24 @@ Runtime::Runtime()
         &program_reference
     );
 
+    // Prefix * reads a cell; infix A * B multiplies.
     define(
         "*",
-        &program_head
+        &program_arithmetic
     );
+    describe("*", "* NAME | A * B\nPrefix: read the binding cell's current head. Infix with spaces: multiply two numbers.");
+}
+
+bool Runtime::is_block(Ptr form) const {
+    return is_relation(form) && is_symbol_text(*this, as_node(form)->head, block_head);
+}
+
+bool Runtime::is_list_form(Ptr form) const {
+    return is_relation(form) && is_symbol_text(*this, as_node(form)->head, list_head);
+}
+
+Ptr Runtime::demand(Ptr form) {
+    return demand_program_form(*this, form);
 }
 
 void Runtime::define(
@@ -2118,7 +2653,7 @@ void Runtime::define(
 }
 
 Program Runtime::identity_query(Ptr form) const {
-    if (!is_relation(form)) return {};
+    if (!is_relation(form) || is_block(form) || is_list_form(form) || pipeline_body(form)) return {};
     auto first = as_node(form);
     auto lookup = [&](Ptr identity) {
         if (!is_symbol(identity)) return Program{};

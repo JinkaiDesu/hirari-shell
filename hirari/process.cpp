@@ -589,7 +589,7 @@ ProcessHost::ProcessHost(
     // Outside braces | remains Seed's reverse application. OS pipes exist only
     // in the explicit `{ }` context, which the reader lowers to ({} BODY).
     runtime.define("{}", &ProcessHost::pipeline, this);
-    runtime.describe("{}", "{ PRODUCER | CONSUMER ... }\nPOSIX pipeline context. Inside braces | is a real OS pipe: every stage is a native process (a PATH executable or exec \"path\" ...), all stages run concurrently, and PRODUCER.stdout streams into CONSUMER.stdin with ordinary backpressure. Seed callables and .seed scripts are not stages. At top level output streams to the terminal; CONSUMER {PIPELINE} feeds a native consumer live. The answer is -stdout -stderr -status, plus -stages with each stage status. Outside braces | is ordinary reverse application: b | a == a b == a(b).");
+    runtime.describe("{}", "{ PRODUCER | CONSUMER ... }  { CONSUMER < \"in\" }  { PRODUCER > \"out\" }  { PRODUCER >> \"out\" }\nPOSIX stream context. Inside braces | is a real OS pipe, < reads the first stage's stdin from a file, > writes and >> appends the last stage's stdout to a file. Every stage is a native process (a PATH executable or exec \"path\" ...); stages run concurrently with ordinary backpressure. A Seed value can also be written: { VALUE > \"file\" } writes text as bytes and structured values as a hirari.values/1 envelope. At top level output streams to the terminal; CONSUMER {PIPELINE} feeds a native consumer live. The answer is -stdout -stderr -status, plus -stages with each stage status. Outside braces | is reverse application (b | a == a b == a(b)) and < > compare values.");
 }
 
 ProcessHost::~ProcessHost() { conpty_.reset(); }
@@ -825,11 +825,73 @@ seed::Ptr ProcessHost::pipeline(
     seed::Ptr body = runtime.pipeline_body(relation);
     if (!context || !body) return relation;
     auto* self = static_cast<ProcessHost*>(context);
+    // Inside { } the stream operators are < (stdin from a file), > and >>
+    // (stdout to a file) and | (a live pipe). Outside, < and > compare.
+    Redirection io;
+    if (!runtime.is_unit(body)) body = self->strip_redirection(runtime, body, io);
+    std::vector<seed::Ptr> segments;
+    bool piped = !runtime.is_unit(body) && runtime.flow(runtime.as_node(body), segments) != body;
+    // { VALUE > "file" }: a Seed value (text, structured data, a help answer)
+    // rather than a process writes the file as bytes or a value envelope.
+    if (!io.output.empty() && !piped && !self->is_foreign_program(runtime, body) && !runtime.pipeline_body(body)) {
+        if (!io.input.empty()) throw std::runtime_error("{} < \"file\" needs a native consumer");
+        if (!self->value_writer_) throw std::runtime_error("{} cannot write values to files in this host");
+        auto parts = runtime.terms(runtime.as_node(body));
+        auto value = runtime.demand(parts.size() == 1 ? parts.front() : body);
+        self->value_writer_(runtime, value, io.output, io.append);
+        ProcessResult process;
+        return unpack(runtime, value, process) ? value : runtime.arena().unit();
+    }
     std::vector<Stage> stages;
     self->build_braced(runtime, body, stages, false);
+    if (!io.input.empty()) {
+        if (stages.front().input) throw std::runtime_error("{} first stage has stdin from < and from its own producer");
+#ifdef _WIN32
+        stages.front().input_file = widen(io.input);
+#endif
+    }
+#ifdef _WIN32
+    if (!io.output.empty()) return self->run_pipeline(runtime, std::move(stages), false, widen(io.output), io.append);
+#endif
     // A pipeline evaluated as the foreground form streams to the shell's own
     // output as bytes arrive; nested ones answer -stdout -stderr -status.
     return self->run_pipeline(runtime, std::move(stages), runtime.reduction_depth() == self->foreground_depth_);
+}
+
+seed::Ptr ProcessHost::strip_redirection(seed::Runtime& runtime, seed::Ptr body, Redirection& io) {
+    auto terms = runtime.terms(runtime.as_node(body));
+    auto is = [&](seed::Ptr p, const char* text) { return symbol_is(runtime, p, text); };
+    auto path = [&](seed::Ptr form, const char* op) {
+        auto value = runtime.reduce(form);
+        if (!runtime.is_literal(value))
+            throw std::runtime_error(std::string("{} ") + op + " needs a quoted file path, e.g. " + op + " \"file.txt\"");
+        return runtime.as_literal(value)->bytes;
+    };
+    std::vector<seed::Ptr> kept;
+    bool seen_pipe = false;
+    for (std::size_t i = 0; i < terms.size(); ++i) {
+        if (is(terms[i], "|")) seen_pipe = true;
+        bool input = is(terms[i], "<");
+        bool output = is(terms[i], ">") || is(terms[i], ">>");
+        if (!input && !output) { kept.push_back(terms[i]); continue; }
+        const char* op = input ? "<" : is(terms[i], ">>") ? ">>" : ">";
+        if (i + 1 >= terms.size() || is(terms[i + 1], "|"))
+            throw std::runtime_error(std::string("{} ") + op + " needs a file after it");
+        if (input) {
+            if (!io.input.empty()) throw std::runtime_error("{} has more than one < input");
+            if (seen_pipe) throw std::runtime_error("{} < belongs to the first stage; later stages read the pipe");
+            io.input = path(terms[++i], op);
+        } else {
+            if (!io.output.empty()) throw std::runtime_error("{} has more than one output redirection");
+            if (i + 2 != terms.size() &&
+                !(i + 3 < terms.size() && is(terms[i + 2], "<")))
+                throw std::runtime_error(std::string("{} ") + op + " \"file\" must end the pipeline");
+            io.append = is(terms[i], ">>");
+            io.output = path(terms[++i], op);
+        }
+    }
+    if (kept.empty()) throw std::runtime_error("{} redirection needs a producer");
+    return runtime.arena().make_relation(kept);
 }
 
 void ProcessHost::build_braced(seed::Runtime& runtime, seed::Ptr body, std::vector<Stage>& stages, bool has_upstream) {
@@ -1435,7 +1497,13 @@ seed::Ptr ProcessHost::run_pipeline(
     Handle null_input =
         make_null_input();
     Handle input_write;
-    if (stages.front().input) {
+    if (!stages.front().input_file.empty()) {
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        Handle file(CreateFileW(stages.front().input_file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!file) throw std::runtime_error("cannot read " + narrow(stages.front().input_file) + ": " + windows_error(GetLastError()));
+        null_input = std::move(file);
+    } else if (stages.front().input) {
         auto input_pipe = make_pipe(false);
         null_input = std::move(input_pipe.read);
         input_write = std::move(input_pipe.write);

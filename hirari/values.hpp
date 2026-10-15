@@ -25,7 +25,8 @@ private:
     static bool collection(seed::Runtime&, seed::Ptr, std::vector<seed::Ptr>&, seed::Ptr);
     static seed::Ptr provide(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr data(seed::Runtime&, seed::Node*, seed::Ptr);
-    static seed::Ptr route(seed::Runtime&, seed::Node*, seed::Ptr);
+    // { VALUE > "file" } / { VALUE >> "file" } for a non-process producer.
+    void write_value(seed::Runtime&, seed::Ptr value, const std::string& path, bool append);
     static seed::Ptr capability(seed::Runtime&, seed::Node*, seed::Ptr);
     struct Provider { std::string description, executable; LinkedProvider invoke; std::shared_ptr<NativeLibrary> library; std::uint64_t token=0; };
     struct Foreign { Json value; std::uint64_t provider; std::string identity; };

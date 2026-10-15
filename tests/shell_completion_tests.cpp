@@ -150,15 +150,17 @@ int wmain(int argc,wchar_t** argv) {
         require(r.as_literal(run("help -curried-doc"))->bytes.find("Updated documentation.") != std::string::npos &&
                 originalMetadata->docstring == "Curried documentation.", "binding metadata revision mutated in place");
         auto outputPath = root / L"help output.txt";
-        run("help -documented > " + quote(hirari::path_text(outputPath)));
+        run("{help -documented > " + quote(hirari::path_text(outputPath)) + "}");
         require(std::filesystem::file_size(outputPath) > 0, "metadata help routing failed");
         // | is application: a Seed answer reaches a native consumer's stdin when
         // explicitly demanded with ?, otherwise it is an argument.
         require(process("(help -documented)? | hirari_test_program relay").out.find("No effects during help.") != std::string::npos,
                 "metadata help pipeline failed");
         auto forbiddenPath = root / L"must not exist.txt";
-        require(!shell.execute("help (hirari_test_program emit \"oops\" > " + quote(hirari::path_text(forbiddenPath)) + ")") &&
-                !std::filesystem::exists(forbiddenPath), "help executed a compound subject");
+        // help documents the { } context that owns this form; it never runs it.
+        shell.execute("help ({hirari_test_program emit \"oops\" > " + quote(hirari::path_text(forbiddenPath)) + "})");
+        require(!std::filesystem::exists(forbiddenPath), "help executed a compound subject");
+        require(!shell.execute("help (hirari_test_program emit \"oops\")"), "help accepted a compound subject");
         host.errorText.clear();
         auto detailed = run("inspect -documented");
         require(r.as_literal(detailed)->bytes.find("documented :=") != std::string::npos &&
