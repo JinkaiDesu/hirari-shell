@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Hirari VERSION 0.5 LANGUAGES C CXX)
+project(Hirari VERSION 0.6.0 LANGUAGES C CXX)
 
 include(cmake/RegexLibrary.cmake)
 
@@ -66,8 +66,8 @@ target_compile_definitions(hirari PRIVATE HIRARI_VERSION="${PROJECT_VERSION}")
 install(TARGETS hirari RUNTIME DESTINATION . COMPONENT hirari)
 install(DIRECTORY library/ DESTINATION Commands COMPONENT hirari)
 install(DIRECTORY Licenses/ DESTINATION Licenses COMPONENT hirari)
-install(FILES cmake/regex-library.lock.json DESTINATION Licenses COMPONENT hirari)
-install(FILES README.md INSTALLATION.md CAPABILITIES.md RUNTIME_CAPABILITIES.md SEED_OPERATORS.md DESTINATION . COMPONENT hirari)
+install(FILES cmake/regex-library.lock.json hirari/vendor/json-LICENSE.txt DESTINATION Licenses COMPONENT hirari)
+install(FILES LICENSE NOTICE README.md DESTINATION . COMPONENT hirari)
 add_custom_command(TARGET hirari POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_CURRENT_SOURCE_DIR}/library" "$<TARGET_FILE_DIR:hirari>/Commands"

@@ -1,0 +1,26 @@
+hirari and Seed
+Copyright (C) 2026 Jinkai
+SPDX-License-Identifier: GPL-2.0-only
+
+hirari, the native Windows shell, and Seed, its composition language, are
+free software; you can redistribute them and/or modify them under the terms
+of the GNU General Public License version 2, as published by the Free
+Software Foundation. Version 2 only: no later version applies. The full
+license is in LICENSE.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+
+The license covers the original material in this repository: the shell and
+language source, the Seed command library, the documentation, the tests and
+the formal proofs.
+
+Third-party components keep their own licenses:
+
+- PCRE2, statically linked into hirari.exe: BSD-3-Clause WITH
+  PCRE2-exception. License: Licenses/PCRE2-LICENSE.md. The pinned version
+  and source hash are in cmake/regex-library.lock.json.
+- nlohmann/json (hirari/vendor/json.hpp): MIT. License: json-LICENSE.txt,
+  in hirari/vendor/ in the source and in Licenses/ in a release.

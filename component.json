@@ -1,0 +1,46 @@
+{
+  "schema": "emergence.component/1",
+  "id": "hirari",
+  "name": "hirari",
+  "kind": "product",
+  "distribution": "public",
+  "version": "0.6.0",
+  "description": "Open-source POSIX shell and the Seed language for Windows.",
+  "requires": {},
+  "versionFiles": [
+    {
+      "file": "CMakeLists.txt",
+      "match": "project\\(Hirari VERSION (?<version>[0-9.]+)",
+      "form": "core"
+    }
+  ],
+  "build": [
+    {
+      "name": "build",
+      "run": [
+        [
+          "cmake",
+          "-S",
+          "{source}",
+          "-B",
+          "{build}",
+          "-G",
+          "Visual Studio 18 2026",
+          "-A",
+          "x64"
+        ],
+        [
+          "cmake",
+          "--build",
+          "{build}",
+          "--config",
+          "Release",
+          "--",
+          "-m",
+          "-nologo",
+          "-v:minimal"
+        ]
+      ]
+    }
+  ]
+}
