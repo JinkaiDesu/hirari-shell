@@ -42,5 +42,79 @@
         ]
       ]
     }
-  ]
+  ],
+  "package": [
+    {
+      "name": "release folder",
+      "run": [
+        [
+          "cmake",
+          "-E",
+          "rm",
+          "-rf",
+          "{build}/package"
+        ],
+        [
+          "cmake",
+          "--install",
+          "{build}",
+          "--config",
+          "Release",
+          "--component",
+          "hirari",
+          "--prefix",
+          "{build}/package"
+        ]
+      ]
+    },
+    {
+      "name": "receipt",
+      "run": [
+        [
+          "pwsh",
+          "-NoProfile",
+          "-File",
+          "{path:ci-cd}/tools/receipt.ps1",
+          "-Root",
+          "{build}/package",
+          "-Version",
+          "{version}",
+          "-Name",
+          "hirari"
+        ]
+      ]
+    },
+    {
+      "name": "archive",
+      "run": [
+        [
+          "pwsh",
+          "-NoProfile",
+          "-File",
+          "{path:ci-cd}/tools/pack.ps1",
+          "-From",
+          "{build}/package",
+          "-To",
+          "{out}/hirari-{version}-windows-x64.zip"
+        ]
+      ]
+    },
+    {
+      "name": "the archive runs on its own",
+      "run": [
+        [
+          "pwsh",
+          "-NoProfile",
+          "-File",
+          "{path:ci-cd}/tests/hirari/release.tests.ps1",
+          "-Archive",
+          "{out}/hirari-{version}-windows-x64.zip",
+          "-Version",
+          "{version}"
+        ]
+      ],
+      "expect": "HIRARI_RELEASE_OK"
+    }
+  ],
+  "promotion": "launcher"
 }
