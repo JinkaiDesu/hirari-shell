@@ -73,6 +73,7 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 
   - The Lean gate (`formal/`) is optional. The test runner must not be Python.
   - Release folder: `cmake --install build --config Release --component hirari --prefix <dir>`.
+- **Changes:** from the workspace root, `pwsh CICD/tools/worktree.ps1 new hirari <topic>`, then push `agent/<topic>`. Every push is verified: `.github/workflows/verify.yml` forwards it to the release train on the Windows runner, which also opens the pull request (`pr publish` is optional). `pwsh CICD/tools/ci.ps1 pr wait -Topic <topic>` returns the verdict, `pr status -Topic <topic>` shows readiness, and the planner integrates.
 - **Protected semantics:** never change the reader, reduction, Name identity, binding laziness, capture/substitution, `|` orientation or `{}` pipelines without the owner's explicit approval, and never without updating `seed_tests`, `integration_tests` and the Lean corpus where they apply.
 - **Introspect first:** before adding a program, check `hirari --eval help`, `help -NAME`, `inspect -NAME` and `capability list`. New vocabulary should be a documented `library/*.seed` command or a provider, not a special case in the evaluator.
 - **Help text:** help is derived from registry descriptions and docstrings. Do not hard-code tables in `shell_help.cpp`.
