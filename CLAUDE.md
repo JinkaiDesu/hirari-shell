@@ -6,7 +6,7 @@ This repository is hirari, the native Windows shell, together with Seed, its com
 
 The hirari source and tests are authoritative; when this section disagrees with them, trust the implementation and refresh this section.
 
-This describes hirari branch `seed-blocks-operators`. On `main`, redirection is unbraced and there are no operators, `=>`, line blocks or `[ ]`.
+This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is merged). An older build may lack some of these forms, so check the hirari you run.
 
 **Seed is the composition language; hirari is the native Windows shell that runs it.**
 
@@ -44,6 +44,9 @@ This describes hirari branch `seed-blocks-operators`. On `main`, redirection is 
 - **`exec` kills the child's process tree when it returns.** Serve long-lived processes with `job start`.
 - **Native argv has no shell re-parsing.** Names project to flags (`-c`), `()` is an empty argument, and words should be quoted.
 - **A bare built-in inside arguments is a value, not a call.** Write `(pwd)`.
+- **A name with a lowercase letter runs a native program on `PATH` before a `.seed` command of that name** (a `unity.exe` shadows `unity.seed`); an all-capital name (`UNITY`) prefers the Seed command. Commands are found in the calling script's folder, the cwd, hirari's `Commands`, then `HIRARI_PATH` and `PATH`.
+- **A `.seed` file shows every statement result that is not Unit,** also when called as a command from another script; its last result is its answer. `if (data bind -x E) () ()` binds quietly.
+- **`args` is a Name, not a list:** `data size args` fails. Use `argc` and `arg I`.
 
 **Composition and worlds:**
 - `source FILE` keeps the file's definitions.
@@ -59,7 +62,7 @@ This describes hirari branch `seed-blocks-operators`. On `main`, redirection is 
 ## Working in this repository
 
 - **Authority:** `seed/`, `hirari/`, `library/` and `tests/` define the language. Whenever you change semantics, built-ins or tests, update the Seed essentials above to match.
-- **Retired docs:** `SEED_SPEC.md` (the full snapshot), `SEED_OPERATORS.md`, `CAPABILITIES.md`, `RUNTIME_CAPABILITIES.md`, `INSTALLATION.md`, `UNITY_INTEGRATION.md` and `formal/README.md` left the repository on 2026-10-16. They are internal: read them in the Emergence Tech workspace under `../Agent/hirari Shell and Seed Lang/`. Do not add them back: this repository holds only `README.md` and this file. The README is user-facing: under 80 lines, and it never links to internal docs. The long README it replaced is at commit `e9d9269`.
+- **Retired docs:** `SEED_SPEC.md` (the full snapshot), `SEED_OPERATORS.md`, `CAPABILITIES.md`, `RUNTIME_CAPABILITIES.md`, `INSTALLATION.md`, `UNITY_INTEGRATION.md` and `formal/README.md` left the repository on 2026-10-16. They are internal: read them in the workspace's `Agent/hirari Shell and Seed Lang/`. Do not add them back: this repository holds only `README.md` and this file. The README is user-facing: under 80 lines, and it never links to internal docs. The long README it replaced is at commit `e9d9269`.
 - **Build and test:**
 
   ```
