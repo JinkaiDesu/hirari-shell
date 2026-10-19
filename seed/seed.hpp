@@ -222,12 +222,23 @@ public:
     ) const;
 
 private:
+    struct Entry {
+        Ptr pointer = nullptr;
+        HostKind kind = HostKind::Node;
+    };
+
+    Node* allocate_node(Ptr head = nullptr);
+    void record(Ptr pointer, HostKind kind);
+    const Entry* find(Ptr pointer) const noexcept;
+    static std::size_t bucket(Ptr pointer) noexcept;
+
 #ifdef SEED_PROFILE
     mutable WorkProfile profile_;
 #endif
-    std::vector<
-        std::unique_ptr<Node>
-    > nodes_;
+    // Blocks own the nodes; growing either vector never moves a Seed form.
+    static constexpr std::size_t nodes_per_block = 256;
+    std::vector<std::unique_ptr<Node[]>> node_blocks_;
+    std::vector<Node*> nodes_;
 
     std::vector<
         std::unique_ptr<Symbol>
@@ -252,10 +263,10 @@ private:
         Symbol*
     > interned_;
 
-    std::unordered_map<
-        Ptr,
-        HostKind
-    > meta_;
+    // Append-only ownership index. Empty slots are never dereferenced, so
+    // foreign/opaque pointers retain the same validation as owned forms.
+    std::vector<Entry> meta_;
+    std::size_t meta_count_ = 0;
 
     Node* unit_ = nullptr;
 };
