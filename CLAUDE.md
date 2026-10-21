@@ -155,7 +155,7 @@ Bounded autonomous execution (owner decision, 2026-10-21). Once the owner author
 
 ## Integration
 
-There is no CI, and GitHub enforces no branch protection on this repository. This procedure is the gate. Merge a pull request only when all of these hold for its exact head commit:
+There is no CI. The repository is public, and GitHub enforces nothing on it: no branch protection, rulesets or required checks are set (checked 2026-10-21). This procedure is the gate. Merge a pull request only when all of these hold for its exact head commit:
 
 1. **Checked:** the Checks passed on that commit in a clean checkout.
 2. **Nothing failing:** every status or check GitHub reports on the head passed. A pending or failed one blocks the merge, and is never merged around.
@@ -168,3 +168,21 @@ Then merge exactly that head: `gh pr merge <n> -R JinkaiDesu/hirari-shell --squa
 1. Check `origin/main`.
 2. Fast-forward the main checkout (`git merge --ff-only origin/main`). If it has local changes, leave them alone and report them once.
 3. Retire the topic: `git worktree remove .worktrees/<topic>` and delete its local branch.
+
+`tools/pipeline.ps1` runs this procedure, so work takes one command. Run it in the background and wait for it to exit, rather than polling:
+
+```
+pwsh -NoProfile -File tools/pipeline.ps1 start <topic>                    # .worktrees/<topic> on agent/<topic>
+pwsh -NoProfile -File tools/pipeline.ps1 stage <topic> -Message <text>    # accumulate: check, commit, push, PR
+pwsh -NoProfile -File tools/pipeline.ps1 ship <topic|number>... [-Message <text>] [-DryRun]
+```
+
+- **`stage`** is for small changes that collect on one pull request. Nothing is merged or published, and staging again adds more.
+- **`ship`** takes the named topics or pull requests all the way to live now. With `-Message`, it stages the one topic named first.
+- **For each pull request, in order,** `ship` checks the exact head in a throwaway `.worktrees/.ship-<n>`. It gates it (head unchanged, mergeable, nothing pending or failing), then merges exactly that head.
+- **After the last merge,** `ship`:
+  - fast-forwards the main checkout and runs the checks there again;
+  - runs `tools/publish.ps1` when the merged files touch the shipped payload (`hirari/`, `seed/`, `library/`, `cmake/`, `Licenses/`, `CMakeLists.txt`, `LICENSE`, `NOTICE`, `README.md`). A version already live is left as it is;
+  - retires each topic's worktree and branches.
+- **It never works around a failure.** It stops at the first blocked step and prints `BLOCKED at <stage>: <why>`, which is what to report. Otherwise the last line is `STAGED …`, `SHIPPED …` or `DRY RUN …`.
+- **The main checkout must be clean.** `ship` refuses to update or publish over local changes.
