@@ -118,22 +118,36 @@ hirari publishes these and consumes none. A change to one bumps its version. Who
 | Interface | Version | Contents |
 |---|---|---|
 | Release archive | `hirari-<version>-windows-x64.zip` | The `cmake --install` release folder, deterministic, with `release.receipt.json` (`schemaVersion` 1: `name`, `version`, and each file's `path`, `size` and `sha256`). |
-| Download manifest | `emergence.manifest/1` | `hirari/manifest.json` in the public downloads bucket, naming the newest archive. |
+| Download manifest | `emergence.manifest/1` | `hirari/<version>/manifest.json` in the public downloads bucket for each version, and `hirari/manifest.json`, the latest pointer: a byte-identical copy of the newest version's manifest. |
 
-The version is `project(Hirari VERSION …)` in `CMakeLists.txt`.
+## Versioning
+
+hirari has its own semver, `project(Hirari VERSION …)` in `CMakeLists.txt`. It answers to nothing outside this repository, and other projects' versions never constrain it.
+
+- **hirari is pre-alpha.** It stays on `0.x`, every manifest's edition is `pre-alpha`, and no build is ever called stable. Leaving pre-alpha or going to `1.0` is the owner's explicit decision, never a pipeline step.
+- **Every change to the shipped payload ships a new version.** `pipeline.ps1 stage` bumps the patch when `main`'s version is already live and the topic hasn't moved past it. A minor bump is a deliberate edit of `CMakeLists.txt` in the topic. `ship` refuses a pull request that changes the payload at a version that is already live.
+- **The release record is git's:** each published version is the annotated tag `v<version>` on the commit its manifest names, with the manifest's and the archive's SHA-256 in the message. `tools/publish.ps1` makes and pushes it. A tag is never moved.
 
 ## Publishing
 
-A version goes live when its archive and manifest are in the public R2 bucket `emergence-releases` (Cloudflare account `7e05861211be8c45fef9de909a25f833`), served at https://downloads.emergencetech.co. From a clean main checkout at a commit on `origin/main`, after the Checks:
+A version goes live when its archive and manifests are in the public R2 bucket `emergence-releases` (Cloudflare account `7e05861211be8c45fef9de909a25f833`), served at https://downloads.emergencetech.co. From a clean main checkout at a commit on `origin/main`, after the Checks:
 
 ```
 pwsh -NoProfile -File tools/publish.ps1
 ```
 
-- It uploads `hirari/<version>/hirari-<version>-windows-x64.zip` and checks the served bytes. Then it writes `hirari/manifest.json` last (`emergence.manifest/1`, edition `pre-alpha`, platform `windows-x64`, the commit, and the archive's `bytes` and `sha256`). Finally it checks that https://emergencetech.co/api/latest/hirari answers that version and commit.
-- **A published version is never overwritten.** If the live manifest already names the version, it uploads nothing and prints `UNCHANGED`; publishing new bytes means bumping the version. If an unfinished earlier run left the same bytes, it reuses them, and it refuses different bytes.
+- **It writes in this order,** so the pointer never names anything that isn't up yet:
+  1. `hirari/<version>/hirari-<version>-windows-x64.zip`, then it checks the served bytes;
+  2. `hirari/<version>/manifest.json` (`emergence.manifest/1`: edition `pre-alpha`, platform `windows-x64`, the commit, and the archive's `bytes` and `sha256`), cached as immutable;
+  3. `hirari/manifest.json`, the same bytes, `no-cache`.
+- **Then it checks and records the release:** https://emergencetech.co/api/latest/hirari must answer that version and commit, and it tags the commit `v<version>`.
+- **A published version is never overwritten.** If the version's manifest is up and the pointer is its exact copy, it uploads nothing and prints `UNCHANGED`.
+- **A run that stopped part-way is finished from what is live:**
+  - a missing versioned manifest is copied from the pointer's exact bytes;
+  - a pointer still on an older version is moved forward, never back;
+  - an archive already up with the same bytes is reused, and one with other bytes is refused.
 - **The token** is `CLOUDFLARE_API_TOKEN` from the process or user environment. It needs R2 write on the bucket and is never printed.
-- **Pre-alpha** builds are never called stable.
+- **Nothing is signed.** Signing is the owner's decision (Authorization).
 
 ## Authorization
 
@@ -143,10 +157,11 @@ Bounded autonomous execution (owner decision, 2026-10-21). Once the owner author
   1. Make the topic's worktree and change only that worktree. Repair failing tests there.
   2. Commit and push `agent/<topic>`, and open or update its pull request.
   3. Gate and merge it (see Integration), and check `origin/main` afterwards.
-  4. Publish a new version's archive and manifest to the downloads bucket, and verify it live.
+  4. Bump the patch version, publish the new version's archive and manifests to the downloads bucket, verify them live, and tag the release.
   5. Report the pull request, the merged commit, what was published, what was checked and how long it took.
 - **Still the owner's explicit approval, each time:**
   - Signing, and any change to licensing (GPL-2.0-only) or to the third-party licenses shipped.
+  - Leaving pre-alpha, or going to `1.0`.
   - Changes to protected Seed semantics (see above).
   - Destructive actions on unique or irreplaceable data: overwriting or deleting a published version, deleting buckets or objects, and rewriting pushed history.
   - Security policy and credentials: secrets, tokens, repository access and visibility, branch protection, and Claude Code's permission settings.
@@ -177,9 +192,9 @@ pwsh -NoProfile -File tools/pipeline.ps1 stage <topic> -Message <text>    # accu
 pwsh -NoProfile -File tools/pipeline.ps1 ship <topic|number>... [-Message <text>] [-DryRun]
 ```
 
-- **`stage`** is for small changes that collect on one pull request. Nothing is merged or published, and staging again adds more.
+- **`stage`** is for small changes that collect on one pull request. Nothing is merged or published, and staging again adds more. It bumps the patch version first when the change touches the shipped payload (Versioning).
 - **`ship`** takes the named topics or pull requests all the way to live now. With `-Message`, it stages the one topic named first.
-- **For each pull request, in order,** `ship` checks the exact head in a throwaway `.worktrees/.ship-<n>`. It gates it (head unchanged, mergeable, nothing pending or failing), then merges exactly that head.
+- **For each pull request, in order,** `ship` checks the exact head in a throwaway `.worktrees/.ship-<n>`. It gates it (head unchanged, mergeable, nothing pending or failing, and a payload change at a version not yet live), then merges exactly that head.
 - **After the last merge,** `ship`:
   - fast-forwards the main checkout and runs the checks there again;
   - runs `tools/publish.ps1` when the merged files touch the shipped payload (`hirari/`, `seed/`, `library/`, `cmake/`, `Licenses/`, `CMakeLists.txt`, `LICENSE`, `NOTICE`, `README.md`). A version already live is left as it is;
