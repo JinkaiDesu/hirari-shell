@@ -1,3 +1,26 @@
+# Solo Developer / Fast-Iterate Rules
+
+The Motorcycle Architecture is a development pattern, coined by terry davis. Where a single developer embraces the footguns.
+
+REFUSE OBSESSING OVER SAFETY PURITY. IT DOESNT EXIST.
+
+Files must be deleted. Things will deprecate. Things have to be lost. Software is a sacrificial pattern. Some code must die.
+
+Do not embed architectural conventions into tests. Test are behavioral only. 
+
+## 1. Provenance, Process, and Product
+
+Human artwork/docs and full project sources are the only things necessary to preserve. Think, to be saved: source artifacts (base images, simple layers, website source, license, build tool, etc.), procedural transformations (the recipe applied to a source), final artifacts (the generated assets, compiled binaries, tied directly back to source), composition (the final app, world, platform, or ecosystem). Split into two buckets: Data Storage (Heavy Assets) and Git Source & Process (light logic)  
+
+## 2. Zero Enterprise Hedging
+- DO NOT create backwards-compatibility layers, deprecation warnings, or parallel "v2" systems.
+- DO NOT suggest slow migration phases unless explicitly asked.
+- If an old system or script is being replaced, DELETE IT immediately. Do not leave dead code lying around. Errors are a good thing and breaking things is how we find old wrong assumptions.
+
+## 3. Direct Refactoring Authority
+- You have explicit authorization to execute destructive edits (`rm`, deleting files, overwriting configurations) in a single pass.
+- Do not ask for confirmation to remove unused configuration files, global workflows, or legacy build setups. Clean as you go.
+
 # hirari / Seed
 
 This repository is hirari, the native Windows shell, together with Seed, its composition language. It is the canonical home of the Seed language context.
@@ -62,7 +85,7 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 ## Working in this repository
 
 - **Authority:** `seed/`, `hirari/`, `library/` and `tests/` define the language. Whenever you change semantics, built-ins or tests, update the Seed essentials above to match.
-- **Retired docs:** `SEED_SPEC.md` (the full snapshot), `SEED_OPERATORS.md`, `CAPABILITIES.md`, `RUNTIME_CAPABILITIES.md`, `INSTALLATION.md`, `UNITY_INTEGRATION.md` and `formal/README.md` left the repository on 2026-10-16. They are internal: read them in the workspace's `Agent/hirari Shell and Seed Lang/`. Do not add them back: this repository holds only `README.md` and this file. The README is user-facing: under 80 lines, and it never links to internal docs. The long README it replaced is at commit `e9d9269`.
+- **Retired docs:** `SEED_SPEC.md` (the full snapshot), `SEED_OPERATORS.md`, `CAPABILITIES.md`, `RUNTIME_CAPABILITIES.md`, `INSTALLATION.md`, `UNITY_INTEGRATION.md` and `formal/README.md` left the repository on 2026-10-16. They are internal: read them in the VPS workspace's `Agent/hirari-shell/`. Do not add them back: this repository holds only `README.md` and this file. The README is user-facing: under 80 lines, and it never links to internal docs. The long README it replaced is at commit `e9d9269`.
 - **Build and test:**
 
   ```
@@ -73,7 +96,9 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 
   - The Lean gate (`formal/`) is optional. The test runner must not be Python.
   - Release folder: `cmake --install build --config Release --component hirari --prefix <dir>`.
-- **Changes:** from the workspace root, `pwsh CICD/tools/worktree.ps1 new hirari <topic>`, then push `agent/<topic>`. Every push is verified: `.github/workflows/verify.yml` forwards it to the release train on the Windows runner, which also opens the pull request (`pr publish` is optional). `pwsh CICD/tools/ci.ps1 pr wait -Topic <topic>` returns the verdict, `pr status -Topic <topic>` shows readiness, and the planner integrates.
+  - Release package: `pwsh tools/package.ps1 -Build build -Out out` writes `out/hirari-<version>-windows-x64.zip` with its `release.receipt.json`, then checks it with `tests/release.tests.ps1`. Skunkworks' platform release bundles exactly this zip.
+- **This repository lives on the VPS.** There is no CI: build and test before pushing.
 - **Protected semantics:** never change the reader, reduction, Name identity, binding laziness, capture/substitution, `|` orientation or `{}` pipelines without the owner's explicit approval, and never without updating `seed_tests`, `integration_tests` and the Lean corpus where they apply.
 - **Introspect first:** before adding a program, check `hirari --eval help`, `help -NAME`, `inspect -NAME` and `capability list`. New vocabulary should be a documented `library/*.seed` command or a provider, not a special case in the evaluator.
 - **Help text:** help is derived from registry descriptions and docstrings. Do not hard-code tables in `shell_help.cpp`.
+
