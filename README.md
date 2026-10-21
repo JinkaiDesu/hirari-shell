@@ -4,6 +4,7 @@ hirari is a native Windows shell that runs Seed, a composition language. Seed
 owns values, names, bindings and evaluation. hirari owns program resolution,
 live process pipelines, interactive terminal programs and optional typed
 providers. It is a general-purpose shell; no rendering engine is required.
+Pre-alpha builds for Windows x64 are at https://emergencetech.co.
 
 ## Build
 
