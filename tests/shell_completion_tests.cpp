@@ -14,7 +14,8 @@ void write(const std::filesystem::path& path,std::string_view source){std::ofstr
 }
 int wmain(int argc,wchar_t** argv) {
     auto before=std::filesystem::current_path();
-    auto root=std::filesystem::temp_directory_path()/(L"Hirari completion 日本 "+std::to_wstring(GetCurrentProcessId()));
+    // Scripts report their canonical directory, so the root is canonical even when TEMP is an 8.3 path.
+    auto root=std::filesystem::canonical(std::filesystem::temp_directory_path())/(L"Hirari completion 日本 "+std::to_wstring(GetCurrentProcessId()));
     try {
         require(argc==2,"native helper path required");auto helper=std::filesystem::path(argv[1]);
         std::filesystem::create_directories(root);std::filesystem::current_path(root);
