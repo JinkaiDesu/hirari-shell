@@ -1,14 +1,14 @@
 # hirari
 
-hirari is a native Windows shell that runs Seed, a composition language. Seed
-owns values, names, bindings and evaluation. hirari owns program resolution,
-live process pipelines, interactive terminal programs and optional typed
-providers. It is a general-purpose shell; no rendering engine is required.
-Pre-alpha builds for Windows x64 are at https://emergencetech.co.
+hirari is a shell, and Seed is its language. Seed owns values, names, bindings
+and evaluation. hirari owns program resolution, live process pipelines,
+interactive terminal programs, background jobs and optional typed providers.
+It runs natively on Windows today; a Linux version is planned. Pre-alpha
+builds for Windows x64 are at https://emergencetech.co.
 
 ## Build
 
-You need CMake 3.24 or newer and a Windows C++23 toolchain with ConPTY.
+On Windows, you need CMake 3.24 or newer and a C++23 toolchain with ConPTY.
 
 ```powershell
 cmake -S . -B build
@@ -53,20 +53,7 @@ git "status"
 
 `help`, `help -NAME`, `inspect -NAME` and `capability list` describe every built-in.
 
-## Worlds and background work
-
-`world open "path/to/world"` reads the folder's `world.toml` and runs its
-entry program. A failed entry restores the previous world, working directory
-and environment.
-
-```toml
-[world]
-name = "Example world"
-version = 1
-
-[entry]
-program = "start.seed"
-```
+## Background work
 
 `job` starts native programs in the background, with progress, cancellation,
 timeouts and results.
