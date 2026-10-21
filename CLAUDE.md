@@ -1,6 +1,6 @@
 # hirari / Seed
 
-This repository is hirari, the native Windows shell, together with Seed, its composition language. It is the canonical home of the Seed language context. It says everything about itself in its own files: it shares only the published interfaces below with anything else, never files, scripts or instructions.
+This repository is hirari, a shell in its own right, together with Seed, its composition language. hirari runs natively on Windows today; a Linux version is planned, so keep platform specifics in the host layer. It is the canonical home of the Seed language context. It says everything about itself in its own files: it shares only the published interfaces below with anything else, never files, scripts or instructions.
 
 ## Solo developer, fast iterate
 
@@ -20,9 +20,9 @@ The hirari source and tests are authoritative; when this section disagrees with 
 
 This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is merged). An older build may lack some of these forms, so check the hirari you run.
 
-**Seed is the composition language; hirari is the native Windows shell that runs it.**
+**Seed is the composition language; hirari is the shell that runs it.**
 
-- Compose worlds, sessions and tools in Seed.
+- Compose sessions, tools and programs in Seed.
 - Python is only for specialised computation (meshes, numerics), invoked as a native program. Never use Python, PowerShell or Node to orchestrate what Seed and hirari already do.
 
 | Form | Meaning |
@@ -60,7 +60,7 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 - **A `.seed` file shows every statement result that is not Unit,** also when called as a command from another script; its last result is its answer. `if (data bind -x E) () ()` binds quietly.
 - **`args` is a Name, not a list:** `data size args` fails. Use `argc` and `arg I`.
 
-**Composition and worlds:**
+**Composition:**
 - `source FILE` keeps the file's definitions.
 - `run FILE ARGS` isolates the file and returns its last value. Inside it, `arg 0`, `argc` and `args` read the arguments.
 - `script-directory` and `path` build paths.
