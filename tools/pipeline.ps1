@@ -60,6 +60,32 @@ function Assert-Topic([string]$Topic) {
     if ($Topic -cnotmatch '^[a-z0-9][a-z0-9-]{0,47}$') { Block 'topic' "a topic is lowercase words joined by '-': '$Topic'" }
 }
 
+# hirari's own semver, from CMakeLists.txt text; and the version its latest manifest names now (none before the first).
+function Get-Version([string]$Text) { if ($Text -match 'project\(Hirari VERSION ([0-9]+\.[0-9]+\.[0-9]+)') { [version]$Matches[1] } else { throw 'CMakeLists.txt names no hirari version' } }
+function Get-LiveVersion {
+    try { [version](Invoke-RestMethod -Uri "https://downloads.emergencetech.co/hirari/manifest.json?v=$([guid]::NewGuid().ToString('N'))" -TimeoutSec 30).version } catch {
+        if ($_.Exception.Response.StatusCode -eq 404) { return $null }; throw
+    }
+}
+
+# A topic that changes the shipped payload ships a new version. If main's version is already live and the topic hasn't
+# moved past it, bump the patch here; a minor or major bump is a deliberate edit of CMakeLists.txt.
+function Update-Version([string]$Topic, [string]$Dir) {
+    Invoke-Git $Dir fetch -q origin main | Out-Null
+    $changed = @(Invoke-Git $Dir diff --name-only origin/main) + @(Invoke-Git $Dir ls-files --others --exclude-standard)
+    if (-not @($changed | Where-Object { $_ -match $Payload }).Count) { return }
+    $cmakeFile = Join-Path $Dir 'CMakeLists.txt'
+    $text = [IO.File]::ReadAllText($cmakeFile)
+    $mine = Get-Version $text
+    $main = Get-Version ((Invoke-Git $Dir show origin/main:CMakeLists.txt) -join "`n")
+    if ($mine -gt $main) { Log "version ${Topic}: $mine (past main's $main)"; return }
+    $live = Get-LiveVersion
+    if (-not $live -or $live -lt $main) { Log "version ${Topic}: $main (not published yet)"; return }
+    $next = [version]::new($main.Major, $main.Minor, $main.Build + 1)
+    [IO.File]::WriteAllText($cmakeFile, ($text -replace 'project\(Hirari VERSION [0-9.]+', "project(Hirari VERSION $next"))
+    Log "version ${Topic}: $main is live, bumped to $next"
+}
+
 # The Checks from CLAUDE.md in $Dir (build/ and out/ inside it); returns their summary or throws.
 function Test-Checkout([string]$Dir) {
     Push-Location -LiteralPath $Dir
@@ -106,6 +132,7 @@ function Push-Topic([string]$Topic, [string]$Text) {
     Assert-Topic $Topic
     $dir = Get-TopicPath $Topic
     if (-not (Test-Path -LiteralPath $dir)) { Block 'stage' "no worktree for $Topic; run start $Topic and make the change there" }
+    try { Update-Version $Topic $dir } catch { Block "stage $Topic version" $_.Exception.Message }
     try { $summary = Test-Checkout $dir } catch { Block "stage $Topic checks" $_.Exception.Message }
     Log "checked ${Topic}: $summary"
     if (Invoke-Git $dir status --porcelain --untracked-files=all) {
@@ -158,6 +185,11 @@ function Ship([object[]]$Refs) {
         if ($p.mergeable -ne 'MERGEABLE') { Block "PR #$n gate" "GitHub reports it $($p.mergeable); bring origin/main into $($p.headRefName) and resolve" }
         $blocking = Get-Blocking $p
         if ($blocking) { Block "PR #$n gate" "reported checks not passed: $($blocking -join ', ')" }
+        if (@($p.files | Where-Object { $_.path -match $Payload }).Count) {
+            $version = Get-Version ((Invoke-Git $Root show "${head}:CMakeLists.txt") -join "`n")
+            $live = Get-LiveVersion
+            if ($live -and $version -le $live) { Block "PR #$n gate" "it changes the shipped payload at version $version, but $live is live; stage it again to bump the version" }
+        }
         $p.files | ForEach-Object { $files.Add($_.path) }
         if ($p.headRefName -match '^agent/(.+)$') { $topics.Add($Matches[1]) }
 
