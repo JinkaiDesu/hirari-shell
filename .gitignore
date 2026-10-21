@@ -13,3 +13,4 @@
 /CTestTestfile.cmake
 /Testing/
 CMakeUserPresets.json
+/.worktrees/
