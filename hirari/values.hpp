@@ -6,7 +6,7 @@
 #include "hirari/native_library.hpp"
 namespace hirari {
 // Generic, inert value transport. Providers own the meaning of their records.
-// The wire has no SQL, regex, Unity, or configuration operations.
+// The wire has no SQL, regex or configuration operations.
 using Json = nlohmann::json;
 inline constexpr const char* value_protocol="hirari.values/1";
 class Values {

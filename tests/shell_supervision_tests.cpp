@@ -86,14 +86,14 @@ int wmain(int argc,wchar_t** argv){
         require(text("data get (hirari_test_program print-env \"HIRARI_SUPERVISION_PROBE\") \"stdout\"")=="<unset>\n","unset did not reach children");
         rejects("data env \"A=B\"");
 
-        write(root/"manifest.json",R"({"world":{"name":"Black Beauty","version":1,"ready":true,"scale":0.5,"pins":["a","b"],"missing":null}})");
+        write(root/"manifest.json",R"({"record":{"name":"Example","version":1,"ready":true,"scale":0.5,"pins":["a","b"],"missing":null}})");
         run("data bind -manifest (data parse-json (data file \"manifest.json\"))");
-        run("data bind -world (data get manifest \"world\")");
-        require(text("data get world \"name\"")=="Black Beauty","JSON text field");
-        require(r.print(run("data get world \"version\""))=="1"&&r.print(run("data get world \"scale\""))=="0.5","JSON numbers");
-        require(r.print(run("data get world \"ready\""))=="-true","JSON boolean");
-        require(r.is_unit(run("data get world \"missing\"")),"JSON null is not Unit");
-        require(text("data at (data get world \"pins\") 1")=="b","JSON list");
+        run("data bind -record (data get manifest \"record\")");
+        require(text("data get record \"name\"")=="Example","JSON text field");
+        require(r.print(run("data get record \"version\""))=="1"&&r.print(run("data get record \"scale\""))=="0.5","JSON numbers");
+        require(r.print(run("data get record \"ready\""))=="-true","JSON boolean");
+        require(r.is_unit(run("data get record \"missing\"")),"JSON null is not Unit");
+        require(text("data at (data get record \"pins\") 1")=="b","JSON list");
         require(json("data size (data get (data parse-json (hirari_test_program emit \"{\\\"k\\\":[1,2,3]}\")) \"k\")")==3,"JSON from program output");
         rejects("data parse-json \"{not json\"");
         rejects("data parse-json (hirari_test_program exit-code \"2\")");
@@ -122,8 +122,8 @@ int wmain(int argc,wchar_t** argv){
         require(text("data get oops \"status\"")=="error"&&text("data get oops \"error\"")=="manifest missing: x.json","attempt error");
         run("data bind -exited (attempt (hirari_test_program exit-code \"7\"))");
         require(text("data get exited \"status\"")=="failed"&&r.print(run("data get exited \"exit_status\""))=="7"&&text("data get exited \"error\"")=="exiting 7\n","attempt program failure");
-        run("data bind -fine (attempt (data get world \"name\"))");
-        require(text("data get fine \"status\"")=="ok"&&text("data get fine \"value\"")=="Black Beauty","attempt success");
+        run("data bind -fine (attempt (data get record \"name\"))");
+        require(text("data get fine \"status\"")=="ok"&&text("data get fine \"value\"")=="Example","attempt success");
         run("data bind -falsy (attempt (if -false \"x\"))");
         require(text("data get falsy \"status\"")=="ok"&&r.is_unit(run("data get falsy \"value\"")),"false value reported as failure");
         require(!shell.execute("if (fail \"not a false value\") \"yes\" \"no\"")&&host.err.find("not a false value")!=std::string::npos,"failure treated as false");host.err.clear();

@@ -5,7 +5,7 @@
 namespace hirari {
 void initialize_installation() {
 #ifdef _WIN32
-    // Launchers select PATH, providers, profiles and writable state directories.
+    // Whatever starts hirari selects PATH, providers, profiles and writable state directories.
     // A standalone shell only identifies its own installation.
     if(GetEnvironmentVariableW(L"HIRARI_HOME",nullptr,0))return;
     std::wstring module(32768,L'\0');

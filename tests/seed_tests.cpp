@@ -505,15 +505,15 @@ int run_all() {
     expect_structural(rt, "\"a() b | ?\"", "(\"a() b | ?\")");
 
     expect_native(rt,
-        "camera := unity -Camera.main",
-        "camera := unity -Camera.main");
+        "answer := tool -Value.main",
+        "answer := tool -Value.main");
 
     expect_structural(rt,
-        "camera := unity -Camera.main",
-        "((camera)(:=)(unity)(-Camera.main))");
+        "answer := tool -Value.main",
+        "((answer)(:=)(tool)(-Value.main))");
 
     rt.define("?", &capture);
-    require(rt.print(rt.run("? camera")) == "? camera",
+    require(rt.print(rt.run("? answer")) == "? answer",
             "registered '?' did not receive its relation");
 
     const char* samples[] = {
@@ -533,7 +533,7 @@ int run_all() {
         "-a?",
         "(-a)?",
         "\"literal?\"",
-        "camera := unity -Camera.main",
+        "answer := tool -Value.main",
         "-((a)(())(b))",
         "{a | b}",
         "{}",

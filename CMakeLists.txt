@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Hirari VERSION 0.6.1 LANGUAGES C CXX)
+project(Hirari VERSION 0.6.2 LANGUAGES C CXX)
 
 include(cmake/RegexLibrary.cmake)
 
