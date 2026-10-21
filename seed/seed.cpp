@@ -1160,10 +1160,7 @@ Ptr program_for(Runtime& runtime, Node* relation, Ptr) {
 // =============================================================================
 
 Arena::Arena() {
-    auto unit =
-        std::make_unique<Node>();
-
-    unit_ = unit.get();
+    unit_ = allocate_node();
 
     // Unit has a real stable address.
     //
@@ -1175,14 +1172,52 @@ Arena::Arena() {
     //
     unit_->head = unit_;
 
-    nodes_.push_back(
-        std::move(unit)
-    );
+    record(unit_, HostKind::Unit);
+}
 
-    meta_.emplace(
-        static_cast<Ptr>(unit_),
-        HostKind::Unit
-    );
+Node* Arena::allocate_node(Ptr head) {
+    if (nodes_.size() % nodes_per_block == 0)
+        node_blocks_.push_back(std::make_unique<Node[]>(nodes_per_block));
+    Node* node = &node_blocks_.back()[nodes_.size() % nodes_per_block];
+    node->head = head;
+    nodes_.push_back(node);
+    return node;
+}
+
+std::size_t Arena::bucket(Ptr pointer) noexcept {
+    // Objects are aligned; mix their address rather than hashing its bytes.
+    auto bits = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
+    bits = (bits >> 3) * UINT64_C(0x9e3779b97f4a7c15);
+    return static_cast<std::size_t>(bits ^ (bits >> 32));
+}
+
+void Arena::record(Ptr pointer, HostKind kind) {
+    if (meta_.empty() || (meta_count_ + 1) > meta_.size() * 3 / 4) {
+        if (meta_.empty()) meta_count_ = 0;
+        std::vector<Entry> grown(meta_.empty() ? 256 : meta_.size() * 2);
+        for (const auto& entry : meta_) {
+            if (!entry.pointer) continue;
+            auto index = bucket(entry.pointer) & (grown.size() - 1);
+            while (grown[index].pointer) index = (index + 1) & (grown.size() - 1);
+            grown[index] = entry;
+        }
+        meta_.swap(grown);
+    }
+    auto index = bucket(pointer) & (meta_.size() - 1);
+    while (meta_[index].pointer && meta_[index].pointer != pointer)
+        index = (index + 1) & (meta_.size() - 1);
+    if (!meta_[index].pointer) ++meta_count_;
+    meta_[index] = {pointer, kind};
+}
+
+const Arena::Entry* Arena::find(Ptr pointer) const noexcept {
+    if (!pointer || meta_.empty()) return nullptr;
+    auto index = bucket(pointer) & (meta_.size() - 1);
+    while (meta_[index].pointer) {
+        if (meta_[index].pointer == pointer) return &meta_[index];
+        index = (index + 1) & (meta_.size() - 1);
+    }
+    return nullptr;
 }
 
 Node* Arena::make_node(
@@ -1191,22 +1226,8 @@ Node* Arena::make_node(
 #ifdef SEED_PROFILE
     ++profile_.nodes;
 #endif
-    auto node =
-        std::make_unique<Node>();
-
-    node->head = head;
-
-    Node* raw =
-        node.get();
-
-    nodes_.push_back(
-        std::move(node)
-    );
-
-    meta_.emplace(
-        static_cast<Ptr>(raw),
-        HostKind::Node
-    );
+    Node* raw = allocate_node(head);
+    record(raw, HostKind::Node);
 
     return raw;
 }
@@ -1272,10 +1293,7 @@ Symbol* Arena::intern(
         std::move(symbol)
     );
 
-    meta_.emplace(
-        static_cast<Ptr>(raw),
-        HostKind::Symbol
-    );
+    record(raw, HostKind::Symbol);
 
     interned_.emplace(
         raw->text,
@@ -1301,10 +1319,7 @@ Name* Arena::make_name(
         std::move(name)
     );
 
-    meta_.emplace(
-        static_cast<Ptr>(raw),
-        HostKind::Name
-    );
+    record(raw, HostKind::Name);
 
     return raw;
 }
@@ -1326,10 +1341,7 @@ Literal* Arena::make_literal(
         std::move(literal)
     );
 
-    meta_.emplace(
-        static_cast<Ptr>(raw),
-        HostKind::Literal
-    );
+    record(raw, HostKind::Literal);
 
     return raw;
 }
@@ -1356,17 +1368,14 @@ Cell* Arena::make_cell(
         std::move(cell)
     );
 
-    meta_.emplace(
-        static_cast<Ptr>(raw),
-        HostKind::Cell
-    );
+    record(raw, HostKind::Cell);
 
     return raw;
 }
 
 Ptr Arena::make_wildcard() {
     auto value = make_node();
-    meta_[value] = HostKind::Wildcard;
+    record(value, HostKind::Wildcard);
     return value;
 }
 
@@ -1381,7 +1390,7 @@ Ptr Arena::make_number(std::string_view spelling) {
         throw std::runtime_error("invalid or out-of-range numeric literal");
     Ptr raw = value.get();
     numbers_.push_back(std::move(value));
-    meta_[raw] = real ? HostKind::Real : HostKind::Integer;
+    record(raw, real ? HostKind::Real : HostKind::Integer);
     return raw;
 }
 
@@ -1394,19 +1403,14 @@ HostKind Arena::kind(
         );
     }
 
-    const auto it =
-        meta_.find(p);
-
-    if (
-        it ==
-        meta_.end()
-    ) {
+    const auto* entry = find(p);
+    if (!entry) {
         throw std::invalid_argument(
             "pointer is not owned by this Seed runtime"
         );
     }
 
-    return it->second;
+    return entry->kind;
 }
 
 bool Arena::is(
@@ -1417,12 +1421,8 @@ bool Arena::is(
         return false;
     }
 
-    const auto it =
-        meta_.find(p);
-
-    return
-        it != meta_.end() &&
-        it->second == expected;
+    const auto* entry = find(p);
+    return entry && entry->kind == expected;
 }
 
 // =============================================================================

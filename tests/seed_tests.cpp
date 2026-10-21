@@ -164,6 +164,50 @@ void semantics() {
     rejects([&]{rt.read(")");}, "unmatched group accepted");
 }
 
+void arena_ownership() {
+    seed::Arena arena, other;
+    int opaque = 0;
+    auto symbol = arena.intern("stable");
+    auto literal = arena.make_literal("bytes");
+    auto name = arena.make_name(&opaque);
+    auto cell = arena.make_cell(symbol);
+    auto wildcard = arena.make_wildcard();
+    auto integer = arena.make_number("42");
+    auto real = arena.make_number("2.5");
+    std::vector<seed::Node*> nodes;
+    for (int i = 0; i < 20000; ++i) {
+        auto node = arena.make_node(symbol);
+        require(!node->args && !node->ref, "new node links must be null");
+        nodes.push_back(node);
+        if (i) nodes[i - 1]->ref = node;
+    }
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        require(nodes[i]->head == symbol && arena.is(nodes[i], seed::HostKind::Node),
+                "arena growth moved a node or lost ownership");
+        require(nodes[i]->ref == (i + 1 < nodes.size() ? nodes[i + 1] : nullptr),
+                "arena growth changed relation links");
+    }
+    require(arena.node_count() == nodes.size() + 2, "unit and wildcard must count as nodes");
+    for (auto [pointer, kind] : {
+        std::pair<seed::Ptr, seed::HostKind>{arena.unit(), seed::HostKind::Unit},
+        {symbol, seed::HostKind::Symbol}, {literal, seed::HostKind::Literal},
+        {name, seed::HostKind::Name}, {cell, seed::HostKind::Cell},
+        {wildcard, seed::HostKind::Wildcard}, {integer, seed::HostKind::Integer},
+        {real, seed::HostKind::Real}}) {
+        require(arena.kind(pointer) == kind && arena.is(pointer, kind), "arena kind changed after growth");
+        require(!other.is(pointer, kind), "another arena accepted a foreign pointer");
+        rejects([&] { other.kind(pointer); }, "another arena classified a foreign pointer");
+    }
+    require(arena.intern("stable") == symbol && name->target == &opaque && cell->symbol == symbol,
+            "arena growth changed symbol or opaque identity");
+    for (auto pointer : {static_cast<seed::Ptr>(nullptr), static_cast<seed::Ptr>(&opaque),
+                        reinterpret_cast<seed::Ptr>(std::uintptr_t{1}),
+                        reinterpret_cast<seed::Ptr>(reinterpret_cast<std::uintptr_t>(nodes[0]) + 1)}) {
+        require(!arena.is(pointer, seed::HostKind::Node), "non-form pointer accepted as a node");
+        rejects([&] { arena.kind(pointer); }, "non-form pointer classified");
+    }
+}
+
 void abstractions() {
     seed::Runtime rt;
     auto reduces = [&](std::string_view source, std::string_view expected) {
@@ -410,6 +454,7 @@ last\nline""")seed");
 
 int run_all();
 int main() {
+    arena_ownership();
     try { return run_all(); }
     catch (const std::exception& error) { std::cerr << "seed_tests: FAIL: " << error.what() << std::endl; return EXIT_FAILURE; }
 }
