@@ -1,29 +1,18 @@
-# Solo Developer / Fast-Iterate Rules
-
-The Motorcycle Architecture is a development pattern, coined by terry davis. Where a single developer embraces the footguns.
-
-REFUSE OBSESSING OVER SAFETY PURITY. IT DOESNT EXIST.
-
-Files must be deleted. Things will deprecate. Things have to be lost. Software is a sacrificial pattern. Some code must die.
-
-Do not embed architectural conventions into tests. Test are behavioral only. 
-
-## 1. Provenance, Process, and Product
-
-Human artwork/docs and full project sources are the only things necessary to preserve. Think, to be saved: source artifacts (base images, simple layers, website source, license, build tool, etc.), procedural transformations (the recipe applied to a source), final artifacts (the generated assets, compiled binaries, tied directly back to source), composition (the final app, world, platform, or ecosystem). Split into two buckets: Data Storage (Heavy Assets) and Git Source & Process (light logic)  
-
-## 2. Zero Enterprise Hedging
-- DO NOT create backwards-compatibility layers, deprecation warnings, or parallel "v2" systems.
-- DO NOT suggest slow migration phases unless explicitly asked.
-- If an old system or script is being replaced, DELETE IT immediately. Do not leave dead code lying around. Errors are a good thing and breaking things is how we find old wrong assumptions.
-
-## 3. Direct Refactoring Authority
-- You have explicit authorization to execute destructive edits (`rm`, deleting files, overwriting configurations) in a single pass.
-- Do not ask for confirmation to remove unused configuration files, global workflows, or legacy build setups. Clean as you go.
-
 # hirari / Seed
 
-This repository is hirari, the native Windows shell, together with Seed, its composition language. It is the canonical home of the Seed language context.
+This repository is hirari, the native Windows shell, together with Seed, its composition language. It is the canonical home of the Seed language context. It says everything about itself in its own files: it shares only the published interfaces below with anything else, never files, scripts or instructions.
+
+## Solo developer, fast iterate
+
+One developer builds this, in the Motorcycle Architecture (coined by Terry Davis): embrace the footguns and keep moving. Refuse to obsess over safety purity; it doesn't exist. Nothing sits between an assignment and its result: no planner and no shared pipeline. The repository checks itself (Checks below), and an authorized objective runs through to a verified result (Authorization below).
+
+- **No enterprise hedging:**
+  - No backwards-compatibility layers, deprecation warnings or parallel "v2" systems.
+  - No slow migration phases unless the owner asks for one.
+- **Replace, then delete.** When something replaces an old system or script, delete the old one in the same change, and leave no dead code. Errors are good: breaking things is how old wrong assumptions are found. Software is a sacrificial pattern; some code must die.
+- **Clean as you go.** Deleting files, unused configuration and legacy build setups in this repository is routine, because git keeps them. Pushed history and published releases follow Authorization.
+- **Tests are behavioural only.** They never encode architectural conventions.
+- **Provenance, process and product.** Only human artwork and docs and the full project sources need preserving: source artifacts, the procedural transformations applied to them, the final artifacts tied back to their source, and their composition. Heavy assets belong in data storage; git holds source and process.
 
 ## Seed essentials (read before writing any Seed)
 
@@ -79,26 +68,90 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 
 **Look before you build:**
 - `help` lists the built-ins, and `help -NAME` (operators: `help -(=>)`), `inspect -NAME` and `capability list` describe them. `EXPR =>` shows the next step.
-- `Commands/*.seed` docstrings and the tests in hirari's `tests/` are the reference.
+- `library/*.seed` docstrings (installed as `Commands/`) and the tests in `tests/` are the reference.
 - Never invent operators or change Seed semantics. Changing Name identity, binding laziness, capture or substitution requires the owner's explicit approval and conformance tests.
 
 ## Working in this repository
 
 - **Authority:** `seed/`, `hirari/`, `library/` and `tests/` define the language. Whenever you change semantics, built-ins or tests, update the Seed essentials above to match.
-- **Retired docs:** `SEED_SPEC.md` (the full snapshot), `SEED_OPERATORS.md`, `CAPABILITIES.md`, `RUNTIME_CAPABILITIES.md`, `INSTALLATION.md`, `UNITY_INTEGRATION.md` and `formal/README.md` left the repository on 2026-10-16. They are internal: read them in the VPS workspace's `Agent/hirari-shell/`. Do not add them back: this repository holds only `README.md` and this file. The README is user-facing: under 80 lines, and it never links to internal docs. The long README it replaced is at commit `e9d9269`.
-- **Build and test:**
-
-  ```
-  cmake -S . -B build
-  cmake --build build --config Release
-  ctest --test-dir build -C Release --output-on-failure
-  ```
-
-  - The Lean gate (`formal/`) is optional. The test runner must not be Python.
-  - Release folder: `cmake --install build --config Release --component hirari --prefix <dir>`.
-  - Release package: `pwsh tools/package.ps1 -Build build -Out out` writes `out/hirari-<version>-windows-x64.zip` with its `release.receipt.json`, then checks it with `tests/release.tests.ps1`. Skunkworks' platform release bundles exactly this zip.
-- **This repository lives on the VPS.** There is no CI: build and test before pushing.
+- **Only two Markdown files:** this `CLAUDE.md` and the user-facing `README.md` (under 80 lines). The old long-form docs (`SEED_SPEC.md` and the others) live in history only, last at commit `e9d9269`; don't add them back.
 - **Protected semantics:** never change the reader, reduction, Name identity, binding laziness, capture/substitution, `|` orientation or `{}` pipelines without the owner's explicit approval, and never without updating `seed_tests`, `integration_tests` and the Lean corpus where they apply.
 - **Introspect first:** before adding a program, check `hirari --eval help`, `help -NAME`, `inspect -NAME` and `capability list`. New vocabulary should be a documented `library/*.seed` command or a provider, not a special case in the evaluator.
 - **Help text:** help is derived from registry descriptions and docstrings. Do not hard-code tables in `shell_help.cpp`.
 
+## Ownership and topics
+
+One owner session takes each piece of work from assignment to verified result. Nobody else signs off.
+
+- **A topic** is a branch `agent/<topic>` with its own worktree in `.worktrees/<topic>` (ignored by git), made with plain git:
+
+  ```
+  git fetch origin main
+  git worktree add -b agent/<topic> .worktrees/<topic> origin/main
+  ```
+
+  Change files only in a topic's worktree.
+- **The main checkout** is for integration only: it is fast-forwarded to `origin/main` after a merge, and never edited.
+- **Overlapping topics** are the owner session's to sequence: merge dependencies first, then bring `origin/main` into the next one.
+- **Interface changes** are announced to consumers in the pull request description and the interface's version.
+
+## Checks
+
+From the root of any clean checkout, on Windows with CMake 3.24+, a C++23 toolchain (Visual Studio Build Tools) and PowerShell 7:
+
+```
+cmake -S . -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+pwsh -NoProfile -File tools/package.ps1 -Build build -Out out
+```
+
+- `package.ps1` writes `out/hirari-<version>-windows-x64.zip` with its `release.receipt.json`, then checks the archive on its own with `tests/release.tests.ps1`, which ends `HIRARI_RELEASE_OK tests=<n>`.
+- `cmake --install build --config Release --component hirari --prefix <dir>` writes a release folder.
+- The Lean gate (`formal/`, `lake`) is opt-in and not one of the checks. The test runner must not be Python.
+- A check that can't run is a blocker: report what it needs, and never skip it or count it as passed.
+
+## Interfaces
+
+hirari produces these, and consumes none. A change to one bumps its version and is announced in the pull request.
+
+| Interface | Version | Contents |
+|---|---|---|
+| Release archive | `hirari-<version>-windows-x64.zip` | The `cmake --install` release folder, deterministic, with `release.receipt.json` (`schemaVersion` 1: `name`, `version`, and each file's `path`, `size` and `sha256`). |
+| Download manifest | `emergence.manifest/1` | `hirari/manifest.json` in the public downloads bucket, naming the newest archive. |
+
+The version is `project(Hirari VERSION …)` in `CMakeLists.txt`.
+
+## Authorization
+
+Bounded autonomous execution (owner decision, 2026-10-21). Once the owner authorizes an objective in this repository, the authorization covers that objective's whole normal lifecycle. Don't ask again for any step of it, including the steps that run on GitHub or Cloudflare.
+
+- **Covered by the objective's authorization:**
+  1. Make the topic's worktree and change only that worktree. Repair failing tests there.
+  2. Commit and push `agent/<topic>`, and open or update its pull request.
+  3. Gate and merge it (see Integration), and check `origin/main` afterwards.
+  4. Publish a new version's archive and manifest to the downloads bucket, and verify it live.
+  5. Report the pull request, the merged commit, what was published, what was checked and how long it took.
+- **Still the owner's explicit approval, each time:**
+  - Signing, and any change to licensing (GPL-2.0-only) or to the third-party licenses shipped.
+  - Changes to protected Seed semantics (see above).
+  - Destructive actions on unique or irreplaceable data: overwriting or deleting a published version, deleting buckets or objects, and rewriting pushed history.
+  - Security policy and credentials: secrets, tokens, repository access and visibility, branch protection, and Claude Code's permission settings.
+  - Anything outside the authorized objective.
+- **Blockers.** When a permission, authentication or approval blocker comes up, report it once with what it needs, and carry on with whatever doesn't depend on it. Don't retry equivalent operations.
+
+## Integration
+
+There is no CI, and GitHub enforces no branch protection on this repository. This procedure is the gate. Merge a pull request only when all of these hold for its exact head commit:
+
+1. **Checked:** the Checks passed on that commit in a clean checkout.
+2. **Nothing failing:** every status or check GitHub reports on the head passed. A pending or failed one blocks the merge, and is never merged around.
+3. **Dependencies first:** every pull request its description puts before it in the merge order is merged.
+4. **Coordinated:** no other open pull request here changes the same files.
+5. **Mergeable:** GitHub reports no conflict.
+
+Then merge exactly that head: `gh pr merge <n> -R JinkaiDesu/hirari-shell --squash --match-head-commit <sha>`. After the merge:
+
+1. Check `origin/main`.
+2. Fast-forward the main checkout (`git merge --ff-only origin/main`). If it has local changes, leave them alone and report them once.
+3. Retire the topic: `git worktree remove .worktrees/<topic>` and delete its local branch.
