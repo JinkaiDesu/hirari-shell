@@ -93,7 +93,7 @@ One owner session takes each piece of work from assignment to verified result. N
   Change files only in a topic's worktree.
 - **The main checkout** is for integration only: it is fast-forwarded to `origin/main` after a merge, and never edited.
 - **Overlapping topics** are the owner session's to sequence: merge dependencies first, then bring `origin/main` into the next one.
-- **Interface changes** are announced to consumers in the pull request description and the interface's version.
+- **Decoupled:** no build elsewhere waits on hirari, and hirari waits on no build elsewhere. A pull request here never has a merge order with another repository's pull request.
 
 ## Checks
 
@@ -113,7 +113,7 @@ pwsh -NoProfile -File tools/package.ps1 -Build build -Out out
 
 ## Interfaces
 
-hirari produces these, and consumes none. A change to one bumps its version and is announced in the pull request.
+hirari publishes these and consumes none. A change to one bumps its version. Whoever reads them picks up a new version on their own; nothing here waits for them.
 
 | Interface | Version | Contents |
 |---|---|---|
@@ -159,7 +159,7 @@ There is no CI. The repository is public, and GitHub enforces nothing on it: no 
 
 1. **Checked:** the Checks passed on that commit in a clean checkout.
 2. **Nothing failing:** every status or check GitHub reports on the head passed. A pending or failed one blocks the merge, and is never merged around.
-3. **Dependencies first:** every pull request its description puts before it in the merge order is merged.
+3. **Dependencies first:** every pull request here that it builds on is merged. Pull requests in other repositories are never dependencies.
 4. **Coordinated:** no other open pull request here changes the same files.
 5. **Mergeable:** GitHub reports no conflict.
 
