@@ -122,6 +122,19 @@ hirari produces these, and consumes none. A change to one bumps its version and 
 
 The version is `project(Hirari VERSION …)` in `CMakeLists.txt`.
 
+## Publishing
+
+A version goes live when its archive and manifest are in the public R2 bucket `emergence-releases` (Cloudflare account `7e05861211be8c45fef9de909a25f833`), served at https://downloads.emergencetech.co. From a clean main checkout at a commit on `origin/main`, after the Checks:
+
+```
+pwsh -NoProfile -File tools/publish.ps1
+```
+
+- It uploads `hirari/<version>/hirari-<version>-windows-x64.zip` and checks the served bytes. Then it writes `hirari/manifest.json` last (`emergence.manifest/1`, edition `pre-alpha`, platform `windows-x64`, the commit, and the archive's `bytes` and `sha256`). Finally it checks that https://emergencetech.co/api/latest/hirari answers that version and commit.
+- **A published version is never overwritten.** If the live manifest already names the version, it uploads nothing and prints `UNCHANGED`; publishing new bytes means bumping the version. If an unfinished earlier run left the same bytes, it reuses them, and it refuses different bytes.
+- **The token** is `CLOUDFLARE_API_TOKEN` from the process or user environment. It needs R2 write on the bucket and is never printed.
+- **Pre-alpha** builds are never called stable.
+
 ## Authorization
 
 Bounded autonomous execution (owner decision, 2026-10-21). Once the owner authorizes an objective in this repository, the authorization covers that objective's whole normal lifecycle. Don't ask again for any step of it, including the steps that run on GitHub or Cloudflare.
