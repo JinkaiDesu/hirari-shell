@@ -28,13 +28,22 @@ int wmain(int argc,wchar_t** argv){
         auto text=[&](const std::string& s){auto p=run(s);require(r.is_literal(p),"expected text: "+s+" -> "+r.print(p));return r.as_literal(p)->bytes;};
         auto rejects=[&](const std::string& s){require(!shell.execute(s),"invalid operation succeeded: "+s);host.err.clear();};
 
+        // Polls with short bounded waits until a running job has written its first output, so a slow machine
+        // delays the answer instead of failing it. Live output is still required while the job runs.
+        auto first_output=[&](const std::string& job){
+            auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+            for(;;){auto seen=json("job wait "+job+" 100");
+                auto pending=seen.at("state")=="starting"||(seen.at("state")=="running"&&seen.at("stdout").get<std::string>().empty());
+                if(!pending||std::chrono::steady_clock::now()>deadline)return seen;}
+        };
+
         // ---- Jobs: identity, live output, non-terminating wait, ownership --------
-        run("data bind -long (job start "+program+" (data list \"pid-sleep\" \"1500\") (data record -directory "+here+"))");
+        run("data bind -long (job start "+program+" (data list \"pid-sleep\" \"16000\") (data record -directory "+here+"))");
         auto started=json("long");
         require(started.at("timeout_ms").is_null(),"a job acquired an implicit timeout");
         require(started.at("directory")==path_text(root),"job directory option ignored");
         run("data bind -id (data get long \"id\")");
-        auto partial=json("job wait id 400");
+        auto partial=first_output("id");
         require(partial.at("wait")=="timeout"&&partial.at("state")=="running","bounded wait did not report a running job: "+partial.dump());
         auto pid=partial.at("pid").get<unsigned long>();
         require(partial.at("stdout")==std::to_string(pid)+"\n","job pid differs from the child's own identity, or output is not live: "+partial.dump());
@@ -45,10 +54,11 @@ int wmain(int argc,wchar_t** argv){
 
         // A sustained { } pipeline as one job: one hirari process for the job,
         // live stdout while it runs, no implicit timeout, and owned cleanup.
-        const auto piped=quote("{hirari_test_program pid-sleep 3000 | hirari_test_program relay-live}");
+        const auto piped=quote("{hirari_test_program pid-sleep 16000 | hirari_test_program relay-live}");
         run("data bind -piped (data get (job start "+hirari+" (data list \"--eval\" "+piped+")) \"id\")");
-        auto streaming=json("job wait piped 1500");
-        require(streaming.at("wait")=="timeout"&&streaming.at("state")=="running","pipeline job ended early: "+streaming.dump());
+        auto streaming=first_output("piped");
+        require(streaming.at("wait")=="timeout"&&streaming.at("state")=="running"&&!streaming.at("stdout").get<std::string>().empty(),
+                "pipeline job ended early or never streamed: "+streaming.dump());
         auto first_stage=std::stoul(streaming.at("stdout").get<std::string>());
         require(alive(first_stage),"pipeline job output was not live while its stages ran: "+streaming.dump());
         auto piped_done=json("job wait piped");
@@ -56,8 +66,8 @@ int wmain(int argc,wchar_t** argv){
                 "pipeline job did not complete with its streamed output: "+piped_done.dump());
         run("data bind -endless (data get (job start "+hirari+" (data list \"--eval\" "+
             quote("{hirari_test_program stubborn | hirari_test_program relay-live}")+")) \"id\")");
-        auto endless=json("job wait endless 500");
-        require(endless.at("state")=="running"&&endless.at("stdout").get<std::string>().starts_with("x\n"),"endless pipeline job did not stream");
+        auto endless=first_output("endless");
+        require(endless.at("state")=="running"&&endless.at("stdout").get<std::string>().starts_with("x\n"),"endless pipeline job did not stream: "+endless.dump());
         auto endless_pid=endless.at("pid").get<unsigned long>();
         run("job cancel endless");
         require(json("job wait endless").at("state")=="cancelled"&&!alive(endless_pid),"cancelled pipeline job left its owner running");
