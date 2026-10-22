@@ -30,7 +30,7 @@ std::string string(std::string_view in,std::size_t& p) {
 }
 void encode(seed::Runtime& r,seed::Ptr p,std::string& out,const std::function<bool(seed::Ptr)>& opaque,unsigned depth=0) {
     if(depth>64 || out.size()>maximum)throw std::runtime_error("definition exceeds persistence budget");
-    if(opaque(p))throw std::runtime_error("live CLR identities cannot be persisted; save a program that finds or constructs the object");
+    if(opaque(p))throw std::runtime_error("live host handles cannot be persisted; save a program that finds or constructs the object");
     if(r.is_unit(p)){out+='U';return;}
     if(r.is_wildcard(p)){out+='W';return;}
     if(r.is_number(p)){out+='D';string(out,r.as_number(p)->spelling);return;}

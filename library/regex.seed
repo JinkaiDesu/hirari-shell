@@ -1,5 +1,5 @@
 #!/usr/bin/env hirari
-# PCRE2 pattern algebra, linked into Hirari; no database or Unity required.
+# PCRE2 pattern algebra, linked into Hirari; no database required.
 # match PATTERN TEXT [FLAGS] -> Boolean
 # capture PATTERN TEXT [FLAGS] -> relation of capture groups
 # parse PATTERN [-(COLUMN_NAMES ...)] TEXT [FLAGS] -> named relation

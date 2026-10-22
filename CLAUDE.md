@@ -56,7 +56,7 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 - **`exec` kills the child's process tree when it returns.** Serve long-lived processes with `job start`.
 - **Native argv has no shell re-parsing.** Names project to flags (`-c`), `()` is an empty argument, and words should be quoted.
 - **A bare built-in inside arguments is a value, not a call.** Write `(pwd)`.
-- **A name with a lowercase letter runs a native program on `PATH` before a `.seed` command of that name** (a `unity.exe` shadows `unity.seed`); an all-capital name (`UNITY`) prefers the Seed command. Commands are found in the calling script's folder, the cwd, hirari's `Commands`, then `HIRARI_PATH` and `PATH`.
+- **A name with a lowercase letter runs a native program on `PATH` before a `.seed` command of that name** (a `tool.exe` shadows `tool.seed`); an all-capital name (`TOOL`) prefers the Seed command. Commands are found in the calling script's folder, the cwd, hirari's `Commands`, then `HIRARI_PATH` and `PATH`.
 - **A `.seed` file shows every statement result that is not Unit,** also when called as a command from another script; its last result is its answer. `if (data bind -x E) () ()` binds quietly.
 - **`args` is a Name, not a list:** `data size args` fails. Use `argc` and `arg I`.
 

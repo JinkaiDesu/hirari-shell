@@ -335,13 +335,13 @@ Ptr demand_program_form(Runtime& runtime, Ptr form);
 // demand
 // -----------------------------------------------------------------------------
 //
-// demand camera
+// demand answer
 //
 // means:
 //
-// demand/reduce camera.
+// demand/reduce answer.
 //
-// camera demand
+// answer demand
 //
 // is structurally different and is therefore left untouched.
 //
@@ -380,13 +380,13 @@ Ptr program_demand(
 // =
 // -----------------------------------------------------------------------------
 //
-// camera := unity -Camera.main  <=>  unity -Camera.main = camera
+// answer := tool -Value.main  <=>  tool -Value.main = answer
 //
 // establishes:
 //
-// Cell(camera).head
+// Cell(answer).head
 //     =
-// unity :Camera.main
+// tool :Value.main
 //
 // The expression is retained lazily; returning it preserves normal reduction
 // of the statement result. This is not memoization or once-only capture.
@@ -487,16 +487,16 @@ Ptr program_colon(
 // @
 // -----------------------------------------------------------------------------
 //
-// @ camera
+// @ answer
 //
-// returns the stable cell for camera.
+// returns the stable cell for answer.
 //
 // The cell exists independently of whatever its current head becomes.
 //
-// @ :camera
+// @ :answer
 //
-// is equivalent at this level because :camera already denotes the
-// semantic identity camera.
+// is equivalent at this level because :answer already denotes the
+// semantic identity answer.
 //
 
 Ptr program_reference(
@@ -539,17 +539,17 @@ Ptr program_reference(
 // *
 // -----------------------------------------------------------------------------
 //
-// * camera
+// * answer
 //
-// reads camera's current cell head.
+// reads answer's current cell head.
 //
-// * :camera
+// * :answer
 //
 // reads the same head.
 //
-// * (@ camera)
+// * (@ answer)
 //
-// also works because @ camera reduces to a Cell.
+// also works because @ answer reduces to a Cell.
 //
 // An unbound cell realizes to Unit for now.
 //

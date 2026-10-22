@@ -335,7 +335,7 @@ int Shell::run() {
     interactive_session_ = true;
     auto banner=shell_environment(L"HIRARI_BANNER");
     host_.write(banner.empty()?"HIRARI\nType `help` to begin!\n\n":banner+"\n");
-    // The launcher selects an optional startup program.
+    // The caller may name a startup program.
     // Evaluate in this session so definitions/world context reach the prompt.
     auto startup = shell_environment(L"HIRARI_STARTUP");
     auto completion = shell_environment(L"HIRARI_STARTUP_STATUS");
@@ -361,7 +361,7 @@ int Shell::run() {
                     status << (failure.empty() ? "ready\n" : "failed\n" + failure);
                     status.close();
                 }
-                // The launcher supplies a fresh path for every shell generation.
+                // The caller supplies a fresh path for every shell it starts.
                 std::filesystem::rename(temporary, destination);
             } catch (const std::exception& error) {
                 host_.error(std::string("startup completion unavailable: ") + error.what() + '\n');
