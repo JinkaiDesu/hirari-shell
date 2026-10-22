@@ -95,7 +95,16 @@ function Test-Checkout([string]$Dir) {
         if ($LASTEXITCODE) { throw "build failed: $(($out | Select-String ': (fatal )?error ' | Select-Object -First 5) -join '; ')" }
         $out = ctest --test-dir build -C Release --output-on-failure 2>&1
         $tests = ($out | Select-String '\d+% tests passed.*' | Select-Object -Last 1).Matches.Value
-        if ($LASTEXITCODE) { throw "tests failed ($tests): $(($out | Select-String '^\s+\d+ - ' ) -join '; ')" }
+        if ($LASTEXITCODE) {
+            # --output-on-failure prints each failed test's own output right after its status line; keep that evidence.
+            $evidence = [Collections.Generic.List[string]]::new(); $inside = $false
+            foreach ($line in $out) {
+                if ("$line" -match '\*\*\*(Failed|Exception|Timeout)') { $inside = $true; $evidence.Add("$line".Trim()); continue }
+                if ("$line" -match '^\s*(Start\s+\d+:|\d+/\d+ Test|\d+% tests passed)') { $inside = $false; continue }
+                if ($inside -and "$line".Trim()) { $evidence.Add("$line".Trim()) }
+            }
+            throw "tests failed ($tests): $(($evidence | Select-Object -First 12) -join ' | ')"
+        }
         $out = pwsh -NoProfile -File tools/package.ps1 -Build build -Out out 2>&1
         $release = ($out | Select-String 'HIRARI_RELEASE_OK tests=\d+').Matches.Value
         if ($LASTEXITCODE -or -not $release) { throw "package failed: $(($out | Select-Object -Last 5) -join ' ')" }
