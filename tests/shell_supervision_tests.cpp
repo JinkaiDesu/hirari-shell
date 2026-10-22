@@ -77,7 +77,7 @@ int wmain(int argc,wchar_t** argv){
         require(expired.at("state")=="failed"&&expired.at("timed_out")==true&&expired.at("error")=="job timed out","explicit job timeout: "+expired.dump());
 
         run("data bind -doomed (data get (job start "+program+" (data list \"pid-sleep\" \"30000\")) \"id\")");
-        auto running=json("job wait doomed 300");auto doomed_pid=running.at("pid").get<unsigned long>();
+        auto running=first_output("doomed");auto doomed_pid=running.at("pid").get<unsigned long>();
         require(alive(doomed_pid),"job not running before cancel");
         run("job cancel doomed");
         require(json("job wait doomed").at("state")=="cancelled"&&!alive(doomed_pid),"cancellation did not stop the owned process");
