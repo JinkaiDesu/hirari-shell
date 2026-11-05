@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "test_support.hpp"
 #include "hirari/value_wire.hpp"
 #include <chrono>
 #include <filesystem>
@@ -11,17 +11,17 @@ void require(bool value,const std::string& message){if(!value)throw std::runtime
 std::string quote(std::string_view s){std::string out="\"";for(char c:s){if(c=='\\'||c=='"')out+='\\';out+=c;}return out+'"';}
 struct TestHost:Host{std::string out,err;void write(std::string_view s)override{out+=s;}void error(std::string_view s)override{err+=s;}};
 void write(const std::filesystem::path& path,std::string_view source){std::ofstream out(path,std::ios::binary);out<<source;require(static_cast<bool>(out),"fixture write");}
-bool alive(unsigned long pid){HANDLE h=OpenProcess(SYNCHRONIZE,FALSE,pid);if(!h)return false;bool running=WaitForSingleObject(h,0)==WAIT_TIMEOUT;CloseHandle(h);return running;}
+bool alive(unsigned long pid){return test::alive(pid);}
 }
-int wmain(int argc,wchar_t** argv){
-    auto root=std::filesystem::temp_directory_path()/(L"Hirari supervision 日本 "+std::to_wstring(GetCurrentProcessId()));
+int run_tests(const std::vector<std::string>& argv){
+    auto root=std::filesystem::temp_directory_path()/text_path("Hirari supervision 日本 "+std::to_string(platform::process_id()));
     try{
-        require(argc==3,"test program and hirari paths required");
+        require(argv.size()==3,"test program and hirari paths required");
         std::filesystem::create_directories(root);std::filesystem::current_path(root);
-        SetEnvironmentVariableW(L"HIRARI_STATE",L"-");
-        auto helper=std::filesystem::path(argv[1]);
-        auto path=helper.parent_path().wstring()+L";"+std::wstring(_wgetenv(L"SystemRoot"))+L"\\System32";SetEnvironmentVariableW(L"PATH",path.c_str());
-        const auto program=quote(win32::narrow(argv[1])),hirari=quote(win32::narrow(argv[2])),here=quote(path_text(root));
+        platform::set_environment("HIRARI_STATE","-");
+        auto helper=text_path(argv[1]);
+        platform::set_environment("PATH",test::search_path({helper.parent_path()}));
+        const auto program=quote(argv[1]),hirari=quote(argv[2]),here=quote(path_text(root));
         TestHost host;Shell shell(host);auto& r=shell.seed();
         auto run=[&](const std::string& s){auto p=shell.execute(s);if(!p)throw std::runtime_error(s+"\n"+host.err);return p;};
         auto json=[&](const std::string& s){return Json::parse(r.as_literal(run("data json ("+s+")"))->bytes);};
@@ -173,3 +173,4 @@ int wmain(int argc,wchar_t** argv){
     std::filesystem::current_path(std::filesystem::temp_directory_path());
     std::error_code error;std::filesystem::remove_all(root,error);return 0;
 }
+HIRARI_TEST_MAIN(run_tests)

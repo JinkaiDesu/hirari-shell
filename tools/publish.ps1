@@ -1,17 +1,19 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-  Publishes hirari's release archive to the public downloads bucket, then its emergence.manifest/1, and checks them
-  live. Runs from a clean checkout of a commit on origin/main, with the archive tools/package.ps1 built there.
+  Publishes hirari's release archives to the public downloads bucket, then their emergence.manifest/1, and checks them
+  live. Runs from a clean checkout of a commit on origin/main, with the archives tools/package.ps1 and tools/linux.ps1
+  built there.
 
 .DESCRIPTION
   The bucket is emergence-releases (https://downloads.emergencetech.co). Each version has its own folder:
     hirari/<version>/hirari-<version>-windows-x64.zip
     hirari/<version>/manifest.json      the version's manifest, immutable
     hirari/manifest.json                the latest pointer: a byte-identical copy of the newest version's manifest
-  They are written in that order, so the pointer never names anything that isn't there yet.
+  Linux has the same three: hirari-<version>-linux-x64.tar.gz, manifest-linux-x64.json and manifest-linux-x64.json.
+  They are written in that order, so a pointer never names anything that isn't there yet.
 
-  A published version is never overwritten. If this version's manifest is already up and the pointer is its exact
+  A published version is never overwritten. If this version's manifests are already up and each pointer is its exact
   copy, nothing is uploaded and the last line is UNCHANGED. A run that stopped part-way is finished from what is
   already live: a missing versioned manifest is copied from the pointer's exact bytes, and a pointer still on an
   older version is moved to this one. Otherwise the last line is PUBLISHED.
@@ -21,9 +23,6 @@
   pwsh -NoProfile -File tools/package.ps1 -Build build -Out out
   pwsh -NoProfile -File tools/publish.ps1
 #>
-param(
-    [string]$Archive
-)
 $ErrorActionPreference = 'Stop'
 $Bucket = 'emergence-releases'
 $Base = 'https://downloads.emergencetech.co'
@@ -35,11 +34,6 @@ $repo = Split-Path $PSScriptRoot -Parent
 $cmake = Get-Content -LiteralPath (Join-Path $repo 'CMakeLists.txt') -Raw
 if ($cmake -notmatch 'project\(Hirari VERSION ([0-9.]+)') { throw 'CMakeLists.txt names no hirari version' }
 $version = $Matches[1]
-$file = "hirari-$version-windows-x64.zip"
-$key = "hirari/$version/$file"
-$url = "$Base/$key"
-$versionedKey = "hirari/$version/manifest.json"
-$latestKey = 'hirari/manifest.json'
 
 # Only a merged commit is published, from a checkout that holds exactly it.
 git -C $repo fetch -q origin main
@@ -98,30 +92,35 @@ function Set-Tag([byte[]]$Manifest) {
     Write-Host "tagged $tag on $($named.commit.Substring(0, 9)) and pushed it"
 }
 
-$versioned = Get-Bytes (Get-Public "$Base/$versionedKey")
-$latest = Get-Bytes (Get-Public "$Base/$latestKey")
-$latestVersion = if ($latest) { ([Text.Encoding]::UTF8.GetString($latest) | ConvertFrom-Json).version }
+# One platform's archive and manifests. Returns its manifest's bytes, and whether anything had to be written.
+function Publish-Platform([string]$Platform, [string]$File, [string]$Type, [string]$VersionedName, [string]$LatestName) {
+    $key = "hirari/$version/$File"
+    $url = "$Base/$key"
+    $versionedKey = "hirari/$version/$VersionedName"
+    $latestKey = "hirari/$LatestName"
+    $versioned = Get-Bytes (Get-Public "$Base/$versionedKey")
+    $latest = Get-Bytes (Get-Public "$Base/$latestKey")
+    $latestVersion = if ($latest) { ([Text.Encoding]::UTF8.GetString($latest) | ConvertFrom-Json).version }
 
-if ($versioned) {
-    if (Test-Same $latest $versioned) {
-        Set-Tag $versioned
-        Write-Host "UNCHANGED: $Base/$versionedKey is up and $Base/$latestKey is its exact copy"
-        exit 0
+    if ($versioned) {
+        if (Test-Same $latest $versioned) {
+            Write-Host "$Base/$versionedKey is up and $Base/$latestKey is its exact copy"
+            return @{ Manifest = $versioned; Wrote = $false }
+        }
+        # This version is up but the pointer isn't on it: move the pointer forward, never back.
+        if ($latest -and [version]$latestVersion -ge [version]$version) { throw "$Base/$latestKey names hirari $latestVersion, not older than $version; it is left as it is" }
+        Use-Token
+        Send-Manifest $latestKey $versioned 'no-cache'
+        return @{ Manifest = $versioned; Wrote = $true }
     }
-    # This version is up but the pointer isn't on it: move the pointer forward, never back.
-    if ($latest -and [version]$latestVersion -ge [version]$version) { throw "$Base/$latestKey names hirari $latestVersion, not older than $version; it is left as it is" }
-    Use-Token
-    Send-Manifest $latestKey $versioned 'no-cache'
-    $manifest = $versioned
-} elseif ($latest -and $latestVersion -eq $version) {
-    # An earlier publish wrote only the pointer: its exact bytes become this version's manifest.
-    Use-Token
-    Send-Manifest $versionedKey $latest $Immutable
-    $manifest = $latest
-} else {
-    if (-not $Archive) { $Archive = Join-Path $repo "out/$file" }
-    $Archive = [IO.Path]::GetFullPath($Archive, $repo)
-    if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw "no archive at $Archive; run tools/package.ps1 first" }
+    if ($latest -and $latestVersion -eq $version) {
+        # An earlier publish wrote only the pointer: its exact bytes become this version's manifest.
+        Use-Token
+        Send-Manifest $versionedKey $latest $Immutable
+        return @{ Manifest = $latest; Wrote = $true }
+    }
+    $Archive = Join-Path $repo "out/$File"
+    if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw "no archive at $Archive; run the Checks first" }
     $bytes = (Get-Item -LiteralPath $Archive).Length
     $sha256 = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
     Use-Token
@@ -132,19 +131,30 @@ if ($versioned) {
         if ((Get-Sha256 $existing) -ne $sha256) { throw "$url already holds different bytes; a published version is never overwritten" }
         Write-Host "archive already at $url with the same bytes"
     } else {
-        Send-Object $key $Archive 'application/zip' $Immutable
+        Send-Object $key $Archive $Type $Immutable
         $served = Get-Bytes (Get-Public $url)
         if (-not $served -or $served.Length -ne $bytes -or (Get-Sha256 $served) -ne $sha256) { throw "$url does not serve the uploaded bytes" }
         Write-Host "uploaded $url ($bytes bytes, sha256 $sha256)"
     }
 
     $manifest = [Text.UTF8Encoding]::new($false).GetBytes(([ordered]@{
-        schema = 'emergence.manifest/1'; id = 'hirari'; name = 'hirari'; edition = 'pre-alpha'; platform = 'windows-x64'
+        schema = 'emergence.manifest/1'; id = 'hirari'; name = 'hirari'; edition = 'pre-alpha'; platform = $Platform
         version = $version; commit = $commit; built = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        artifact = [ordered]@{ file = $file; key = $key; url = $url; bytes = $bytes; sha256 = $sha256 }
+        artifact = [ordered]@{ file = $File; key = $key; url = $url; bytes = $bytes; sha256 = $sha256 }
     } | ConvertTo-Json -Depth 5))
     Send-Manifest $versionedKey $manifest $Immutable
     Send-Manifest $latestKey $manifest 'no-cache'
+    @{ Manifest = $manifest; Wrote = $true }
+}
+
+$linuxFile = "hirari-$version-linux-x64.tar.gz"
+$windows = Publish-Platform 'windows-x64' "hirari-$version-windows-x64.zip" 'application/zip' 'manifest.json' 'manifest.json'
+$linux = Publish-Platform 'linux-x64' $linuxFile 'application/gzip' 'manifest-linux-x64.json' 'manifest-linux-x64.json'
+$manifest = $windows.Manifest
+if (-not $windows.Wrote -and -not $linux.Wrote) {
+    Set-Tag $manifest
+    Write-Host "UNCHANGED: hirari $version is up for windows-x64 and linux-x64, and each latest pointer is its exact copy"
+    exit 0
 }
 
 $named = [Text.Encoding]::UTF8.GetString($manifest) | ConvertFrom-Json
@@ -155,4 +165,4 @@ for ($i = 0; $i -lt 12; $i++) {
 }
 if ($answer.version -ne $named.version -or $answer.commit -ne $named.commit) { throw "$Site/api/latest/hirari does not answer hirari $($named.version) at $($named.commit.Substring(0, 9))" }
 Set-Tag $manifest
-Write-Host "PUBLISHED hirari $($named.version)-pre-alpha at $($named.commit.Substring(0, 9)): $Base/$versionedKey, and $Base/$latestKey is its exact copy; $Site/api/latest/hirari answers it"
+Write-Host "PUBLISHED hirari $($named.version)-pre-alpha at $($named.commit.Substring(0, 9)) for windows-x64 and linux-x64; each latest pointer is its version's exact copy, and $Site/api/latest/hirari answers it"

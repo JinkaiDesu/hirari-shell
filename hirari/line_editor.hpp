@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hirari/console.hpp"
 #include "hirari/host.hpp"
 
 #include <cstddef>
@@ -19,7 +20,7 @@ struct Completion {
 };
 
 // The prompt's line editor: cursor movement, kill keys, durable history,
-// reverse search and completion, over the console's key events.
+// reverse search and completion, over the terminal's keys.
 class LineEditor {
 public:
     enum class Outcome { Line, Cancelled, End };
@@ -31,9 +32,7 @@ public:
     void remember(const std::string& line);
 
 private:
-    struct Key { char32_t character = 0; unsigned virtual_key = 0; bool control = false, alt = false, pending = false; };
-    bool next_key(Key&, bool& interrupted);
-    bool handle_search(const Key&, bool& accepted);
+    bool handle_search(const console::Key&, bool& accepted);
     void render();
     void complete();
     void recall(std::size_t index);

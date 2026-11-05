@@ -1,6 +1,6 @@
 # hirari / Seed
 
-This repository is hirari, a shell in its own right, together with Seed, its composition language. hirari runs natively on Windows today; a Linux version is planned, so keep platform specifics in the host layer. It is the canonical home of the Seed language context. It says everything about itself in its own files: it shares only the published interfaces below with anything else, never files, scripts or instructions.
+This repository is hirari, a shell in its own right, together with Seed, its composition language. hirari runs natively on Windows and Linux. Platform specifics stay in the host layer: `platform`, `console`, `terminal` and `process`, each with a `_windows` and a `_linux` file. It is the canonical home of the Seed language context. It says everything about itself in its own files: it shares only the published interfaces below with anything else, never files, scripts or instructions.
 
 ## Solo developer, fast iterate
 
@@ -56,7 +56,9 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 - **`exec` kills the child's process tree when it returns.** Serve long-lived processes with `job start`.
 - **Native argv has no shell re-parsing.** `-c` passes as `-c`, the Name `--long` as `--long`, `()` is an empty argument, and words should be quoted.
 - **A bare built-in inside arguments is a value, not a call.** Write `(pwd)`.
-- **A name with a lowercase letter runs a native program on `PATH` before a `.seed` command of that name** (a `tool.exe` shadows `tool.seed`); an all-capital name (`TOOL`) prefers the Seed command. Commands are found in the calling script's folder, the cwd, hirari's `Commands`, then `HIRARI_PATH` and `PATH`.
+- **hirari's own `Commands` answer before anything else.** `ls` is hirari's on every platform; `/usr/bin/ls` still runs by its path.
+- **Otherwise, a name with a lowercase letter runs a native program on `PATH` before a `.seed` command of that name** (a `tool.exe` shadows `tool.seed`); an all-capital name (`TOOL`) prefers the Seed command, and finds `tool.seed` where file names keep their case. Other commands are found in the calling script's folder, the cwd, then `HIRARI_PATH` and `PATH`.
+- **A `{ }` stage is always a native process,** so there `ls` is the `PATH` program, and a name with no native program is refused.
 - **A `.seed` file shows every statement result that is not Unit,** also when called as a command from another script; its last result is its answer. Definitions (`:=`, `=`, `data bind`) still answer but are never shown.
 - **`name := EXPR` also evaluates `EXPR` once at the definition,** so a definition with an effect runs it then, and again at each reference.
 - **Leading text in an abstraction's body is its docstring:** `("hi " + n) : n` drops `"hi "` and `f "bob"` answers `+ "bob"`. Put the text elsewhere (`(n + "!") : n` works) or bind it first.
@@ -107,9 +109,11 @@ cmake -S . -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 pwsh -NoProfile -File tools/package.ps1 -Build build -Out out
+pwsh -NoProfile -File tools/linux.ps1 -Out out
 ```
 
 - `package.ps1` writes `out/hirari-<version>-windows-x64.zip` with its `release.receipt.json`, then checks the archive on its own with `tests/release.tests.ps1`, which ends `HIRARI_RELEASE_OK tests=<n>`.
+- `linux.ps1` sends the checkout to the Linux build machine (`HIRARI_LINUX_HOST` and `HIRARI_LINUX_KEY`, in the process or user environment). In an Ubuntu 24.04 chroot it builds, runs `ctest`, and runs `tools/package.seed`, which writes `hirari-<version>-linux-x64.tar.gz` and checks it with `tests/release.tests.seed`. It repeats that check in a clean Debian 13 chroot, brings the archive to `out/`, and ends `HIRARI_LINUX_OK`. Releases are built on the older system so they run there and on anything newer.
 - `cmake --install build --config Release --component hirari --prefix <dir>` writes a release folder.
 - The Lean gate (`formal/`, `lake`) is opt-in and not one of the checks. The test runner must not be Python.
 - A check that can't run is a blocker: report what it needs, and never skip it or count it as passed.
@@ -120,8 +124,8 @@ hirari publishes these and consumes none. A change to one bumps its version. Who
 
 | Interface | Version | Contents |
 |---|---|---|
-| Release archive | `hirari-<version>-windows-x64.zip` | The `cmake --install` release folder, deterministic, with `release.receipt.json` (`schemaVersion` 1: `name`, `version`, and each file's `path`, `size` and `sha256`). |
-| Download manifest | `emergence.manifest/1` | `hirari/<version>/manifest.json` in the public downloads bucket for each version, and `hirari/manifest.json`, the latest pointer: a byte-identical copy of the newest version's manifest. |
+| Release archive | `hirari-<version>-windows-x64.zip`, `hirari-<version>-linux-x64.tar.gz` | The `cmake --install` release folder, deterministic, with `release.receipt.json` (`schemaVersion` 1: `name`, `version`, and each file's `path`, `size` and `sha256`). |
+| Download manifest | `emergence.manifest/1` | For each version in the public downloads bucket, `hirari/<version>/manifest.json` (Windows) and `hirari/<version>/manifest-linux-x64.json`; and the latest pointers `hirari/manifest.json` and `hirari/manifest-linux-x64.json`, each a byte-identical copy of the newest version's manifest for its platform. |
 
 ## Self-update
 
@@ -157,13 +161,15 @@ pwsh -NoProfile -File tools/publish.ps1
 ```
 
 - **It writes in this order,** so the pointer never names anything that isn't up yet:
-  1. `hirari/<version>/hirari-<version>-windows-x64.zip`, then it checks the served bytes;
-  2. `hirari/<version>/manifest.json` (`emergence.manifest/1`: edition `pre-alpha`, platform `windows-x64`, the commit, and the archive's `bytes` and `sha256`), cached as immutable;
-  3. `hirari/manifest.json`, the same bytes, `no-cache`.
+  1. The archive under `hirari/<version>/`, then it checks the served bytes;
+  2. the version's manifest (`emergence.manifest/1`: edition `pre-alpha`, the platform, the commit, and the archive's `bytes` and `sha256`), cached as immutable;
+  3. the latest pointer, the same bytes, `no-cache`.
+
+  Windows goes first, then Linux, each with its own names (see Interfaces).
 - **Then it checks and records the release:** https://emergencetech.co/api/latest/hirari must answer that version and commit, and it tags the commit `v<version>`.
-- **A published version is never overwritten.** If the version's manifest is up and the pointer is its exact copy, it uploads nothing and prints `UNCHANGED`.
+- **A published version is never overwritten.** If the version's manifests are up and each pointer is its exact copy, it uploads nothing and prints `UNCHANGED`.
 - **A run that stopped part-way is finished from what is live:**
-  - a missing versioned manifest is copied from the pointer's exact bytes;
+  - a missing versioned manifest is copied from its pointer's exact bytes;
   - a pointer still on an older version is moved forward, never back;
   - an archive already up with the same bytes is reused, and one with other bytes is refused.
 - **The token** is `CLOUDFLARE_API_TOKEN` from the process or user environment. It needs R2 write on the bucket and is never printed.

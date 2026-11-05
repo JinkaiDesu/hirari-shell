@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include "hirari/regex.hpp"
 #include "hirari/files.hpp"
 
@@ -11,10 +11,6 @@
 #include <functional>
 #include <fstream>
 #include <cctype>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#endif
 #include <string>
 #include <string_view>
 
@@ -22,20 +18,14 @@ namespace hirari {
 
 namespace {
 struct OnExit { std::function<void()> action; ~OnExit() { action(); } };
+std::string lower_case(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
 bool source_has_form(std::string_view source) {
     return seed::Reader::source_has_form(source);
 }
-std::string shell_environment(const wchar_t* key) {
-#ifdef _WIN32
-    DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
-    if (!size) return {};
-    std::wstring value(size, L'\0');
-    value.resize(GetEnvironmentVariableW(key, value.data(), size));
-    return win32::narrow(value);
-#else
-    return {};
-#endif
-}
+std::string shell_environment(const char* key) { return platform::environment(key).value_or(std::string{}); }
 std::string script_text(seed::Runtime& r, seed::Ptr form) {
     auto value = r.reduce(form);
     ProcessResult process;
@@ -105,21 +95,15 @@ Shell::Shell(
         if(!prefer_script(symbol->text) && !ProcessHost::executable_path(symbol->text).empty())
             return ProcessHost::StreamProgram{};
         auto path=find_script(symbol->text);if(path.empty())return ProcessHost::StreamProgram{};
-#ifdef _WIN32
-        std::wstring executable(32768,L'\0');auto length=GetModuleFileNameW(nullptr,executable.data(),static_cast<DWORD>(executable.size()));
-        if(!length || length>=executable.size())throw std::runtime_error("cannot locate Hirari for script stream stage");
-        executable.resize(length);
-        auto sibling=std::filesystem::path(executable).parent_path()/L"hirari.exe";
-        if(std::filesystem::is_regular_file(sibling))executable=sibling.wstring();
-        return ProcessHost::StreamProgram{executable,{"--stream-file",path_text(path)}};
-#else
-        return ProcessHost::StreamProgram{};
-#endif
+        auto executable=platform::own_executable();
+        if(executable.empty())throw std::runtime_error("cannot locate Hirari for script stream stage");
+        auto sibling=executable.parent_path()/platform::shell_file_name;
+        if(std::filesystem::is_regular_file(sibling))executable=sibling;
+        return ProcessHost::StreamProgram{path_text(executable),{"--stream-file",path_text(path)}};
     });
-    auto directory=shell_environment(L"HIRARI_STATE");
+    auto directory=shell_environment("HIRARI_STATE");
     if(directory.empty()){
-        auto local=shell_environment(L"LOCALAPPDATA");
-        if(!local.empty())directory=path_text(text_path(local)/"Hirari"/"vocabulary");
+        directory=path_text(platform::default_state_directory());
     }
     if(!directory.empty() && directory!="-") {
         vocabulary_=std::make_unique<Vocabulary>(text_path(directory));
@@ -164,22 +148,35 @@ std::vector<std::filesystem::path> Shell::script_roots(bool search_path) const {
     std::vector<std::filesystem::path> roots;
     if (!script_frames_.empty()) roots.push_back(script_frames_.back().path.parent_path());
     roots.push_back(std::filesystem::current_path());
-#ifdef _WIN32
-    std::wstring module(32768,L'\0');
-    auto count=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
-    if(count && count<module.size()){module.resize(count);roots.push_back(std::filesystem::path(module).parent_path()/L"Commands");}
-#endif
+    if(auto executable=platform::own_executable();!executable.empty())roots.push_back(executable.parent_path()/"Commands");
     if (search_path) {
-        for (const auto* key : {L"HIRARI_PATH", L"PATH"}) {
+        for (const auto* key : {"HIRARI_PATH", "PATH"}) {
             std::istringstream paths(shell_environment(key));
             std::string root;
-            while (std::getline(paths, root, ';')) if (!root.empty()) roots.push_back(text_path(root));
+            while (std::getline(paths, root, platform::path_list_separator)) if (!root.empty()) roots.push_back(text_path(root));
         }
     }
     return roots;
 }
 
+std::filesystem::path Shell::installed_command(const std::string& name) {
+    auto file = text_path(name);
+    if (file.has_parent_path() || file.has_extension()) return {};
+    auto executable = platform::own_executable();
+    if (executable.empty()) return {};
+    file += ".seed";
+    auto candidate = executable.parent_path() / "Commands" / file;
+    std::error_code error;
+    return std::filesystem::is_regular_file(candidate, error) ? std::filesystem::canonical(candidate) : std::filesystem::path{};
+}
+
+bool Shell::native_first(const std::string& name) {
+    return !prefer_script(name) && installed_command(name).empty();
+}
+
 std::filesystem::path Shell::find_script(const std::string& name, bool explicit_file) const {
+    if (!explicit_file)
+        if (auto installed = installed_command(name); !installed.empty()) return installed;
     auto file = text_path(name);
     if (file.extension() != ".seed") {
         if (explicit_file) throw std::runtime_error("Seed programs require a .seed file");
@@ -193,13 +190,17 @@ std::filesystem::path Shell::find_script(const std::string& name, bool explicit_
         std::error_code error;
         if (std::filesystem::is_regular_file(candidate, error)) return std::filesystem::canonical(candidate);
     }
+    // An all-capital command identity names the same command wherever file names keep their case.
+    if (!explicit_file && prefer_script(name) && file.stem() != text_path(lower_case(name))) {
+        if (auto lowered = find_script(lower_case(name)); !lowered.empty()) return lowered;
+    }
     return {};
 }
 
 seed::Program Shell::resolve(seed::Runtime& r, seed::Symbol* symbol, seed::Ptr context) {
     auto& shell = *static_cast<Shell*>(context);
     if (r.binding(symbol)) return {};
-    if(!prefer_script(symbol->text))
+    if(native_first(symbol->text))
         if(auto native=ProcessHost::resolve(r,symbol,&shell.processes_))return native;
     // Capitalization chooses vocabulary before implicit executable lookup.
     auto path = shell.find_script(symbol->text);
@@ -278,88 +279,19 @@ seed::Ptr Shell::exec(seed::Runtime& r, seed::Node* relation, seed::Ptr context)
 }
 
 void Shell::wait_foreground() {
-#ifdef _WIN32
-            HANDLE input_handle = GetStdHandle(STD_INPUT_HANDLE);
-            DWORD saved_mode = 0;
-            if (!GetConsoleMode(input_handle, &saved_mode)) throw std::runtime_error("foreground terminal input is unavailable");
-            SetConsoleMode(input_handle, ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
-            struct ModeGuard {
-                HANDLE input; DWORD mode;
-                ~ModeGuard() { SetConsoleMode(input, mode); }
-            } guard{input_handle, saved_mode};
-            auto update_size = [this]() {
-                CONSOLE_SCREEN_BUFFER_INFO info{};
-                if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
-                    resize(static_cast<std::uint16_t>(info.srWindow.Right - info.srWindow.Left + 1),
-                           static_cast<std::uint16_t>(info.srWindow.Bottom - info.srWindow.Top + 1));
-            };
-            update_size();
-            wchar_t high_surrogate = 0;
-            while (interactive()) {
-                if (host_.interrupted()) interrupt();
-                DWORD ready = WaitForSingleObject(input_handle, 30);
-                if (ready == WAIT_TIMEOUT) continue;
-                if (ready != WAIT_OBJECT_0) { processes_.interrupt(); break; }
-                INPUT_RECORD event{};
-                DWORD count = 0;
-                if (!ReadConsoleInputW(input_handle, &event, 1, &count)) break;
-                if (event.EventType == WINDOW_BUFFER_SIZE_EVENT) { update_size(); continue; }
-                if (event.EventType != KEY_EVENT || !event.Event.KeyEvent.bKeyDown) continue;
-                const auto& key = event.Event.KeyEvent;
-                std::string bytes;
-                wchar_t c = key.uChar.UnicodeChar;
-                if (c) {
-                    if (c >= 0xd800 && c <= 0xdbff) { high_surrogate = c; continue; }
-                    wchar_t chars[2]{c, 0};
-                    int length = 1;
-                    if (high_surrogate && c >= 0xdc00 && c <= 0xdfff) {
-                        chars[0] = high_surrogate; chars[1] = c; length = 2;
-                    }
-                    high_surrogate = 0;
-                    char utf8[8];
-                    int size = WideCharToMultiByte(CP_UTF8, 0, chars, length, utf8, 8, nullptr, nullptr);
-                    bytes.assign(utf8, static_cast<std::size_t>(size));
-                } else {
-                    switch (key.wVirtualKeyCode) {
-                    case VK_UP: bytes = "\x1b[A"; break;
-                    case VK_DOWN: bytes = "\x1b[B"; break;
-                    case VK_RIGHT: bytes = "\x1b[C"; break;
-                    case VK_LEFT: bytes = "\x1b[D"; break;
-                    case VK_HOME: bytes = "\x1b[H"; break;
-                    case VK_END: bytes = "\x1b[F"; break;
-                    case VK_INSERT: bytes = "\x1b[2~"; break;
-                    case VK_DELETE: bytes = "\x1b[3~"; break;
-                    case VK_PRIOR: bytes = "\x1b[5~"; break;
-                    case VK_NEXT: bytes = "\x1b[6~"; break;
-                    default:
-                        if (key.wVirtualKeyCode >= VK_F1 && key.wVirtualKeyCode <= VK_F4)
-                            bytes = std::string("\x1bO") + static_cast<char>('P' + key.wVirtualKeyCode - VK_F1);
-                        else if (key.wVirtualKeyCode >= VK_F5 && key.wVirtualKeyCode <= VK_F12) {
-                            static constexpr int codes[]{15, 17, 18, 19, 20, 21, 23, 24};
-                            bytes = "\x1b[" + std::to_string(codes[key.wVirtualKeyCode - VK_F5]) + "~";
-                        }
-                        break;
-                    }
-                }
-                const bool alt = (key.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
-                const bool ctrl = (key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-                const bool shift = (key.dwControlKeyState & SHIFT_PRESSED) != 0;
-                const int modifier = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0);
-                if (!c && modifier > 1 && !bytes.empty()) {
-                    if (bytes[1] == 'O') bytes = "\x1b[1;" + std::to_string(modifier) + bytes.back();
-                    else if (bytes.back() == '~') bytes.insert(bytes.size() - 1, ";" + std::to_string(modifier));
-                    else bytes = "\x1b[1;" + std::to_string(modifier) + bytes.back();
-                } else if (c && alt && !ctrl) bytes.insert(0, "\x1b");
-                for (WORD repeat = 0; repeat < key.wRepeatCount; ++repeat) terminal_input(bytes);
-            }
-            processes_.reap_foreground();
-#endif
+    console::run_foreground(host_, {
+        [this] { return interactive(); },
+        [this](std::string_view bytes) { terminal_input(bytes); },
+        [this](std::uint16_t columns, std::uint16_t rows) { resize(columns, rows); },
+        [this] { interrupt(); },
+    });
+    processes_.reap_foreground();
 }
 
 std::string Shell::prompt() const {
     if (waiting()) return ".....> ";
     auto directory = path_text(std::filesystem::current_path());
-    auto home = shell_environment(L"USERPROFILE");
+    auto home = platform::home_directory();
     if (!home.empty() && directory.size() >= home.size() && directory.compare(0, home.size(), home) == 0 &&
         (directory.size() == home.size() || directory[home.size()] == '\\' || directory[home.size()] == '/'))
         directory = "~" + directory.substr(home.size());
@@ -371,18 +303,16 @@ std::string Shell::prompt() const {
 int Shell::run() {
     interactive_session_ = true;
     const bool terminal = host_.terminal_capable();
-    auto banner=shell_environment(L"HIRARI_BANNER");
+    auto banner=shell_environment("HIRARI_BANNER");
     if(!banner.empty())host_.write(banner+"\n");
     else if(terminal)host_.write("hirari. `help` lists what's here, `help --seed` teaches the language, Tab completes.\n\n");
     // The caller may name a startup program.
     // Evaluate in this session so definitions/world context reach the prompt.
-    auto startup = shell_environment(L"HIRARI_STARTUP");
-    auto completion = shell_environment(L"HIRARI_STARTUP_STATUS");
-#ifdef _WIN32
+    auto startup = shell_environment("HIRARI_STARTUP");
+    auto completion = shell_environment("HIRARI_STARTUP_STATUS");
     // One-shot host request: an interactive child must not boot the world again.
-    SetEnvironmentVariableW(L"HIRARI_STARTUP", nullptr);
-    SetEnvironmentVariableW(L"HIRARI_STARTUP_STATUS", nullptr);
-#endif
+    platform::set_environment("HIRARI_STARTUP", std::nullopt);
+    platform::set_environment("HIRARI_STARTUP_STATUS", std::nullopt);
     if (!startup.empty()) {
         std::string failure;
         try {
@@ -413,9 +343,7 @@ int Shell::run() {
     if (vocabulary_) history = vocabulary_->directory() / "history";
     LineEditor editor(host_, history, [this](std::string_view before) { return complete(before); });
     for (;;) {
-#ifdef _WIN32
         if (interactive()) { wait_foreground(); execution_status_ = processes_.last_status(); continue; }
-#endif
         if (terminal) {
             auto outcome = editor.read(prompt(), line);
             if (outcome == LineEditor::Outcome::End) break;
@@ -592,7 +520,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
     auto saved_bindings = local ? seed_.capture_bindings() : std::vector<seed::Cell>{};
     auto saved_directory = std::filesystem::current_path();
     auto saved_world = worlds_;
-    auto saved_world_env = shell_environment(L"HIRARI_WORLD");
+    auto saved_world_env = platform::environment("HIRARI_WORLD");
     // Frame facts are values, so grouping (args), (argc) and
     // (script-directory) reads them without inventing zero-argument call syntax.
     std::vector<seed::Cell> frame_cells;
@@ -606,10 +534,7 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
             std::error_code ignored;
             std::filesystem::current_path(saved_directory, ignored);
             worlds_ = saved_world;
-#ifdef _WIN32
-            auto wide = win32::widen(saved_world_env);
-            SetEnvironmentVariableW(L"HIRARI_WORLD", wide.empty() ? nullptr : wide.c_str());
-#endif
+            platform::set_environment("HIRARI_WORLD", saved_world_env);
         }
     }};
     seed_.bind(seed_.intern("args"),seed_.arena().make_name(seed_.product(script_frames_.back().arguments)));

@@ -1,4 +1,4 @@
-#include "hirari/conpty.hpp"
+#include "hirari/terminal.hpp"
 #include "hirari/win32.hpp"
 
 #include <algorithm>
@@ -11,10 +11,9 @@
 #include <utility>
 
 namespace hirari {
-#ifdef _WIN32
 using namespace win32;
 
-struct ConPtySession::Impl {
+struct TerminalSession::Impl {
     explicit Impl(Host& terminal) : host(terminal) {}
     Host& host;
     std::atomic_bool running{false};
@@ -54,28 +53,19 @@ struct ConPtySession::Impl {
         input_write.reset();
     }
 };
-#else
-struct ConPtySession::Impl {
-    explicit Impl(Host&) {}
-};
-#endif
 
-ConPtySession::ConPtySession(Host& host) : impl_(std::make_unique<Impl>(host)) {}
-ConPtySession::~ConPtySession() { close(); }
+TerminalSession::TerminalSession(Host& host) : impl_(std::make_unique<Impl>(host)) {}
+TerminalSession::~TerminalSession() { close(); }
 
-bool ConPtySession::running() const noexcept {
-#ifdef _WIN32
+bool TerminalSession::running() const noexcept {
     return impl_->running.load();
-#else
-    return false;
-#endif
 }
 
-void ConPtySession::start(const std::wstring& executable,
+void TerminalSession::start(const std::string& executable_text,
                          const std::vector<std::string>& arguments,
                          std::uint16_t columns, std::uint16_t rows,
                          ExitHandler exited) {
-#ifdef _WIN32
+    const std::wstring executable = widen(executable_text);
     close();
     Handle input_read, output_write;
     HANDLE read = nullptr, write = nullptr;
@@ -200,14 +190,9 @@ void ConPtySession::start(const std::wstring& executable,
         close();
         throw;
     }
-#else
-    (void)executable; (void)arguments; (void)columns; (void)rows; (void)exited;
-    throw std::runtime_error("ConPTY is only available on Windows");
-#endif
 }
 
-void ConPtySession::write(std::string_view bytes) {
-#ifdef _WIN32
+void TerminalSession::write(std::string_view bytes) {
     if (!running() || bytes.empty()) return;
     {
         std::lock_guard lock(impl_->input_mutex);
@@ -215,27 +200,19 @@ void ConPtySession::write(std::string_view bytes) {
         impl_->pending_input.append(bytes);
     }
     impl_->input_ready.notify_one();
-#else
-    (void)bytes;
-#endif
 }
 
-void ConPtySession::resize(std::uint16_t columns, std::uint16_t rows) {
-#ifdef _WIN32
+void TerminalSession::resize(std::uint16_t columns, std::uint16_t rows) {
     std::lock_guard lock(impl_->terminal_mutex);
     if (impl_->pseudo)
         ResizePseudoConsole(impl_->pseudo,
             COORD{static_cast<SHORT>(std::clamp<unsigned>(columns, 1, 32767)),
                   static_cast<SHORT>(std::clamp<unsigned>(rows, 1, 32767))});
-#else
-    (void)columns; (void)rows;
-#endif
 }
 
-void ConPtySession::interrupt() { write("\x03"); }
+void TerminalSession::interrupt() { write("\x03"); }
 
-void ConPtySession::close() {
-#ifdef _WIN32
+void TerminalSession::close() {
     impl_->running.store(false);
     if (impl_->job.get()) TerminateJobObject(impl_->job.get(), 1);
     // Only the waiter operates the live session's I/O teardown.
@@ -246,6 +223,5 @@ void ConPtySession::close() {
     impl_->output_read.reset();
     impl_->process.reset();
     impl_->job.reset();
-#endif
 }
 } // namespace hirari

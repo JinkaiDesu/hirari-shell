@@ -8,7 +8,7 @@
   start <topic>                     Make (or reuse) .worktrees/<topic> on agent/<topic>: resumed from
                                     origin/agent/<topic> if it exists, else new from origin/main. Change files only there.
   stage <topic> -Message <text>     Accumulate: run the checks in the topic's worktree (configure, build, ctest,
-                                    tools/package.ps1), commit everything in it, push, and open or update its pull
+                                    tools/package.ps1, tools/linux.ps1), commit everything in it, push, and open or update its pull
                                     request. Nothing is merged or published, so repeated stages pile up on one PR.
   ship <topic|number>... [-Message <text>] [-DryRun]
                                     The whole pipeline, now. With -Message, the one topic named is staged first. Then,
@@ -108,7 +108,10 @@ function Test-Checkout([string]$Dir) {
         $out = pwsh -NoProfile -File tools/package.ps1 -Build build -Out out 2>&1
         $release = ($out | Select-String 'HIRARI_RELEASE_OK tests=\d+').Matches.Value
         if ($LASTEXITCODE -or -not $release) { throw "package failed: $(($out | Select-Object -Last 5) -join ' ')" }
-        "$tests, $release"
+        $out = pwsh -NoProfile -File tools/linux.ps1 -Out out 2>&1
+        $linux = ($out | Select-String 'HIRARI_LINUX_OK .*').Matches.Value
+        if ($LASTEXITCODE -or -not $linux) { throw "Linux check failed: $(($out | Select-Object -Last 40) -join ' | ')" }
+        "$tests, $release; $linux"
     } finally { Pop-Location }
 }
 

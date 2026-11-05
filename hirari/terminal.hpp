@@ -11,27 +11,28 @@
 
 namespace hirari {
 
-class ConPtySession {
+// A native program on a pseudoterminal of its own: ConPTY on Windows, a pty on Linux.
+class TerminalSession {
 public:
     using ExitHandler =
         std::function<void(int)>;
 
-    explicit ConPtySession(
+    explicit TerminalSession(
         Host& host
     );
 
-    ~ConPtySession();
+    ~TerminalSession();
 
-    ConPtySession(
-        const ConPtySession&
+    TerminalSession(
+        const TerminalSession&
     ) = delete;
 
-    ConPtySession& operator=(
-        const ConPtySession&
+    TerminalSession& operator=(
+        const TerminalSession&
     ) = delete;
 
     void start(
-        const std::wstring& executable,
+        const std::string& executable,
         const std::vector<std::string>& arguments,
         std::uint16_t columns = 120,
         std::uint16_t rows = 30,

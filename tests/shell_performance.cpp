@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -25,8 +25,8 @@ void validate(seed::Runtime& runtime, seed::Ptr value, std::size_t case_index) {
 }
 int main() {
     try {
-        SetEnvironmentVariableW(L"HIRARI_STATE", L"-");
-        SetEnvironmentVariableW(L"HIRARI_PATH", L"");
+        hirari::platform::set_environment("HIRARI_STATE", "-");
+        hirari::platform::set_environment("HIRARI_PATH", "");
         std::array<std::array<std::vector<double>, sources.size()>, 2> samples;
         std::array<std::array<std::uint64_t, sources.size()>, 2> chains{};
         for (int repeat = 0; repeat < repetitions; ++repeat) {

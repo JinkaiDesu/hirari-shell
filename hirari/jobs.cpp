@@ -1,7 +1,7 @@
 #include "hirari/jobs.hpp"
 #include "hirari/value_wire.hpp"
 #include "hirari/world.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include "hirari/sha256.hpp"
 #include <fstream>
 #include <chrono>
@@ -75,7 +75,7 @@ Json Jobs::invoke(const std::vector<Json>& arguments) {
         timeout=limit.get<long long>();
     }
     std::string slot=options.value("slot",std::string{}),revision=options.value("revision",std::string{});
-    std::string id="job-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(Clock::now().time_since_epoch().count())+"-"+std::to_string(sequence_++);
+    std::string id="job-"+std::to_string(platform::process_id())+"-"+std::to_string(Clock::now().time_since_epoch().count())+"-"+std::to_string(sequence_++);
     Json request={{"protocol","hirari.jobs/1"},{"request_id",id},{"revision",revision},{"parameters",options.value("parameters",Json::object())}};
     std::string input=request.dump()+"\n";if(input.size()>1024*1024)throw std::runtime_error("job parameters exceed 1 MiB");
     auto cwd=std::filesystem::current_path();std::filesystem::path cache;
@@ -119,7 +119,7 @@ Json Jobs::invoke(const std::vector<Json>& arguments) {
             // A private arena only packages argv/process results; no user source
             // is parsed or evaluated on the worker thread.
             seed::Runtime runtime;ProcessHost process(runtime,host);
-            process.worker(cwd.wstring(),[&](std::string_view chunk,bool error){
+            process.worker(path_text(cwd),[&](std::string_view chunk,bool error){
                 if(chunk.empty())return;
                 // Live output stays observable while the job runs.
                 {std::lock_guard lock(job->mutex);job->state[error?"stderr":"stdout"].get_ref<std::string&>().append(chunk);}

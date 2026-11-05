@@ -40,19 +40,48 @@ std::string folded(std::string text) {
     return text;
 }
 
+// A file name is bytes, and a record's text is UTF-8: anything that isn't becomes U+FFFD, and `lossy` says so.
+bool make_text(std::string& name) {
+    std::string out;
+    bool lossy = false;
+    for (std::size_t i = 0; i < name.size();) {
+        const auto lead = static_cast<unsigned char>(name[i]);
+        std::size_t length = lead < 0x80 ? 1 : lead >= 0xc2 && lead < 0xe0 ? 2 : lead >= 0xe0 && lead < 0xf0 ? 3 : lead >= 0xf0 && lead < 0xf5 ? 4 : 0;
+        for (std::size_t k = 1; length && k < length; ++k)
+            if (i + k >= name.size() || (static_cast<unsigned char>(name[i + k]) & 0xc0) != 0x80) length = 0;
+        if (!length) { out += "\xef\xbf\xbd"; lossy = true; ++i; continue; }
+        out.append(name, i, length);
+        i += length;
+    }
+    name = std::move(out);
+    return lossy;
+}
+
+std::string mode_text(fs::perms permissions) {
+    constexpr char digits[] = "01234567";
+    const auto bits = static_cast<unsigned>(permissions) & 07777u;
+    return {digits[(bits >> 9) & 7], digits[(bits >> 6) & 7], digits[(bits >> 3) & 7], digits[bits & 7]};
+}
+
+// A link is reported as itself, not as what it points to.
 Json entry(const fs::directory_entry& item, std::string name) {
     std::error_code error;
-    const bool directory = item.is_directory(error);
-    const bool file = item.is_regular_file(error);
-    return {{"name", std::move(name)}, {"kind", directory ? "directory" : file ? "file" : "other"},
-            {"size", file ? item.file_size(error) : 0}};
+    const auto status = item.symlink_status(error);
+    const bool directory = fs::is_directory(status);
+    const bool file = fs::is_regular_file(status);
+    const bool link = fs::is_symlink(status);
+    const bool lossy = make_text(name);
+    Json record{{"name", std::move(name)}, {"kind", directory ? "directory" : file ? "file" : link ? "symlink" : "other"},
+                {"size", file ? item.file_size(error) : 0}, {"mode", mode_text(status.permissions())}};
+    if (lossy) record["lossy"] = true;
+    return record;
 }
 
 Json list(const Request& request) {
     if (request.paths.size() > 1) throw std::runtime_error("list takes one path");
     auto root = request.paths.empty() ? fs::path(".") : request.paths.front();
     std::error_code error;
-    if (!fs::exists(root, error)) failed(request, root, "no such file or directory");
+    if (!fs::exists(fs::symlink_status(root, error))) failed(request, root, "no such file or directory");
     if (!fs::is_directory(root, error)) return Json::array({entry(fs::directory_entry(root), path_text(root.filename()))});
     Json entries = Json::array();
     for (fs::directory_iterator walk(root, fs::directory_options::skip_permission_denied, error), end; !error && walk != end; walk.increment(error))
@@ -120,7 +149,7 @@ void install_files(Values& values) {
         "provide --files \"mkdir\" \"DIRECTORY\" ...\n"
         "provide --files \"rm\" [--r] \"PATH\" ...\n"
         "provide --files \"cp\"|\"mv\" [--r] \"SOURCE\" ... \"DESTINATION\"\n"
-        "list answers a list of records with name, kind (file, directory or other) and size; the others answer Unit. "
+        "list answers a list of records with name, kind (file, directory, symlink or other), size and mode; a name that isn't UTF-8 has U+FFFD in its place and lossy set. The others answer Unit. "
         "mkdir creates parents. rm and cp need --r for a directory, and rm refuses a filesystem root. Any failure names the path.",
         [](const std::vector<Json>& arguments) -> Json {
             auto request = parse(arguments);

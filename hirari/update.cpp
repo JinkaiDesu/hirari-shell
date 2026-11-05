@@ -1,7 +1,7 @@
 #include "hirari/update.hpp"
 #include "hirari/sha256.hpp"
 #include "hirari/vendor/json.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -11,9 +11,6 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
-#ifndef _WIN32
-#error "self-update has no host layer for this platform yet: see the Platform section of update.cpp"
-#endif
 namespace hirari {
 namespace {
 namespace fs = std::filesystem;
@@ -32,75 +29,42 @@ fs::path to_path(std::string_view value) { return fs::path(std::u8string(value.b
 // =============================================================================
 // Platform. A port supplies these and nothing else in this file changes.
 // =============================================================================
+#ifdef _WIN32
 constexpr std::string_view platform_name = "windows-x64";
 constexpr std::string_view latest_manifest = "https://downloads.emergencetech.co/hirari/manifest.json";
+#else
+constexpr std::string_view platform_name = "linux-x64";
+constexpr std::string_view latest_manifest = "https://downloads.emergencetech.co/hirari/manifest-linux-x64.json";
+#endif
 
 fs::path own_executable() {
-    std::wstring module(32768, L'\0');
-    const auto count = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
-    if (!count || count >= module.size()) refuse("cannot locate this executable");
-    module.resize(count);
-    return fs::path(module);
+    auto file = platform::own_executable();
+    if (file.empty()) refuse("cannot locate this executable");
+    return file;
 }
-// The system's own tools, by full path: a program of the same name earlier on PATH never handles a release.
-fs::path system_tool(const wchar_t* name) {
-    std::wstring directory(MAX_PATH, L'\0');
-    const auto count = GetSystemDirectoryW(directory.data(), MAX_PATH);
-    if (!count || count >= MAX_PATH) refuse("cannot locate the system directory");
-    directory.resize(count);
-    return fs::path(directory) / name;
+std::string process_id() { return std::to_string(platform::process_id()); }
+fs::path system_tool(const char* name) {
+    auto tool = platform::system_tool(name);
+    if (tool.empty()) refuse(std::string("this system has no ") + name);
+    return tool;
 }
-std::string process_id() { return std::to_string(GetCurrentProcessId()); }
-std::optional<std::string> environment(const wchar_t* name) {
-    std::wstring value(32768, L'\0');
-    const auto count = GetEnvironmentVariableW(name, value.data(), static_cast<DWORD>(value.size()));
-    if (!count || count >= value.size()) return {};
-    value.resize(count);
-    return win32::narrow(value);
+fs::path downloader() { return system_tool("curl"); }
+fs::path unpacker() { return system_tool("tar"); }
+platform::Ran run_program(const fs::path& program, const std::vector<std::string>& arguments, const fs::path& output, unsigned timeout_ms) {
+    try { return platform::run_program(program, arguments, output, timeout_ms); }
+    catch (const std::exception& error) { refuse(error.what()); }
 }
-fs::path downloader() { return system_tool(L"curl.exe"); }
-fs::path unpacker() { return system_tool(L"tar.exe"); }
-
-struct Ran { int status; std::string output; };
-// Runs a program with its stdout and stderr gathered, killing it after the timeout.
-Ran run_program(const fs::path& program, const std::vector<std::string>& arguments, const fs::path& output, DWORD timeout_ms) {
-    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
-    win32::Handle sink(CreateFileW(output.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
-    win32::Handle nothing(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr));
-    if (!sink || !nothing) refuse("cannot open " + text(output) + ": " + win32::windows_error(GetLastError()));
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdInput = nothing.get();
-    startup.hStdOutput = sink.get();
-    startup.hStdError = sink.get();
-    auto line = win32::make_command_line(program.wstring(), arguments);
-    PROCESS_INFORMATION started{};
-    if (!CreateProcessW(program.c_str(), line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &started))
-        refuse("cannot run " + text(program) + ": " + win32::windows_error(GetLastError()));
-    win32::Handle process(started.hProcess), thread(started.hThread);
-    if (WaitForSingleObject(process.get(), timeout_ms) != WAIT_OBJECT_0) {
-        TerminateProcess(process.get(), 1);
-        WaitForSingleObject(process.get(), INFINITE);
-        refuse(text(program) + " did not finish in time");
-    }
-    DWORD status = 1;
-    GetExitCodeProcess(process.get(), &status);
-    sink.reset();
-    std::ifstream in(output, std::ios::binary);
-    return {static_cast<int>(status), std::string(std::istreambuf_iterator<char>(in), {})};
-}
-// Held for the life of the process, whichever way it ends: the system releases and deletes it.
+// Held for the life of the process, whichever way it ends: the system releases it.
 class Lock {
 public:
-    explicit Lock(const fs::path& file) : handle_(CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr)) {
-        if (handle_) return;
-        const auto error = GetLastError();
-        if (error == ERROR_SHARING_VIOLATION) refuse("another update of this installation is running");
-        refuse("cannot write to " + text(file.parent_path()) + ": " + win32::windows_error(error));
+    explicit Lock(const fs::path& file) {
+        std::string failure;
+        if (lock_.acquire(file, failure)) return;
+        if (failure.empty()) refuse("another update of this installation is running");
+        refuse("cannot write to " + text(file.parent_path()) + ": " + failure);
     }
 private:
-    win32::Handle handle_;
+    platform::HeldFile lock_;
 };
 
 // =============================================================================
@@ -252,7 +216,7 @@ int run_update(const std::vector<std::string>& options, std::string_view install
     struct Scratch { fs::path path; ~Scratch() { std::error_code ignored; fs::remove_all(path, ignored); } } scratch_guard{scratch};
 
     // HIRARI_UPDATE_MANIFEST reads another manifest, and only then may its archive be elsewhere.
-    const auto override_url = environment(L"HIRARI_UPDATE_MANIFEST");
+    const auto override_url = platform::environment("HIRARI_UPDATE_MANIFEST");
     const std::string protocols = override_url ? "=https,file" : "=https";
     fetch(override_url.value_or(std::string(latest_manifest)), scratch / "manifest.json", scratch / "log", protocols);
     const auto latest = read_manifest(read_file(scratch / "manifest.json"), !override_url);

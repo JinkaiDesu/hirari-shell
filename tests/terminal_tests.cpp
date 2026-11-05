@@ -1,8 +1,7 @@
-// The prompt, as a person meets it: hirari.exe on a real pseudoconsole, driven by keystrokes.
-// ConPTY re-renders the screen, so typed Seed reports each result through a file.
-#include "hirari/conpty.hpp"
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+// The prompt, as a person meets it: hirari on a real pseudoterminal, driven by keystrokes.
+// A terminal re-renders the screen, so typed Seed reports each result through a file.
+#include "hirari/terminal.hpp"
+#include "test_support.hpp"
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -16,7 +15,7 @@
 namespace {
 using namespace std::chrono_literals;
 const std::string left="\x1b[D",up="\x1b[A",home="\x1b[H",end="\x1b[F",backspace="\x7f",tab="\t",enter="\r";
-const std::string ctrl_a="\x01",ctrl_e="\x05",ctrl_k="\x0b",ctrl_u="\x15",ctrl_w="\x17",ctrl_y="\x19",ctrl_r="\x12",ctrl_z="\x1a";
+const std::string ctrl_a="\x01",ctrl_e="\x05",ctrl_k="\x0b",ctrl_u="\x15",ctrl_w="\x17",ctrl_y="\x19",ctrl_r="\x12",ctrl_z="\x1a",ctrl_d="\x04";
 std::string repeat(const std::string& keys,std::size_t count){std::string out;for(std::size_t i=0;i<count;++i)out+=keys;return out;}
 std::string read(const std::filesystem::path& path){std::ifstream in(path,std::ios::binary);return {std::istreambuf_iterator<char>(in),{}};}
 void write(const std::filesystem::path& path,std::string_view text){std::ofstream(path,std::ios::binary)<<text;}
@@ -33,7 +32,7 @@ private:
 
 class Terminal {
 public:
-    explicit Terminal(const std::wstring& executable):pty_(screen_) {
+    explicit Terminal(const std::string& executable):pty_(screen_) {
         pty_.start(executable,{},120,30,[this](int code){status_.store(code);});
     }
     void type(const std::string& keys) {pty_.write(keys);}
@@ -60,23 +59,23 @@ public:
     }
 private:
     Screen screen_;
-    hirari::ConPtySession pty_;
+    hirari::TerminalSession pty_;
     std::atomic_int status_{-1};
 };
 
 std::string statement(const std::string& text,const std::string& file) {return "{ \""+text+"\" > \""+file+"\" }";}
 }
 
-int wmain(int argc,wchar_t** argv) {
+int run_tests(const std::vector<std::string>& argv) {
     auto before=std::filesystem::current_path();
-    auto root=std::filesystem::canonical(std::filesystem::temp_directory_path())/(L"Hirari terminal "+std::to_wstring(GetCurrentProcessId()));
+    auto root=std::filesystem::canonical(std::filesystem::temp_directory_path())/("Hirari terminal "+std::to_string(hirari::platform::process_id()));
     try {
-        if(argc!=2)throw std::runtime_error("hirari.exe path required");
-        const std::wstring hirari=argv[1];
+        if(argv.size()!=2)throw std::runtime_error("hirari path required");
+        const std::string hirari=argv[1];
         std::filesystem::create_directories(root/"tabdir");
         std::filesystem::current_path(root);
-        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"state").c_str());
-        SetEnvironmentVariableW(L"HIRARI_STARTUP",nullptr);
+        hirari::platform::set_environment("HIRARI_STATE",hirari::path_text(root/"state"));
+        hirari::platform::set_environment("HIRARI_STARTUP",std::nullopt);
         write(root/"tabfile-unique.txt","old");
         write(root/"tabdir"/"inner.txt","old");
 
@@ -131,8 +130,12 @@ int wmain(int argc,wchar_t** argv) {
             t.expect("history.txt","first");
             t.type(up+enter);
             t.expect("history.txt","firstfirst");
-            // Ctrl+Z on an empty line ends the shell without entering a line.
+            // The end-of-input key on an empty line ends the shell without entering a line.
+#ifdef _WIN32
             t.finish(ctrl_z);
+#else
+            t.finish(ctrl_d);
+#endif
         }
         {
             // History survives the shell.
@@ -156,3 +159,4 @@ int wmain(int argc,wchar_t** argv) {
         return 1;
     }
 }
+HIRARI_TEST_MAIN(run_tests)

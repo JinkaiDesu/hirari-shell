@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 
 #include <array>
 #include <iostream>
@@ -145,8 +145,8 @@ struct Host : hirari::Host {
     void error(std::string_view text) override { errors += text; }
 };
 void real_shell() {
-    SetEnvironmentVariableW(L"HIRARI_STATE", L"-");
-    SetEnvironmentVariableW(L"HIRARI_PATH", L"");
+    hirari::platform::set_environment("HIRARI_STATE", "-");
+    hirari::platform::set_environment("HIRARI_PATH", "");
     Host host;
     hirari::Shell shell(host);
     auto& runtime = shell.seed();

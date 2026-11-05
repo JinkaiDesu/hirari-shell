@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -150,29 +150,20 @@ std::vector<std::string> Shell::known_names(bool native) {
             if(walk->path().extension()==".seed")names.insert(path_text(walk->path().stem()));
     ignored.clear();
     if(native) {
-#ifdef _WIN32
-        std::string search;
-        if(DWORD size=GetEnvironmentVariableW(L"PATH",nullptr,0)) {
-            std::wstring value(size,L'\0');
-            value.resize(GetEnvironmentVariableW(L"PATH",value.data(),size));
-            search=win32::narrow(value);
-        }
+        std::string search=platform::environment("PATH").value_or(std::string{});
         if(search!=path_scanned_ || path_programs_.empty()) {
             path_scanned_=search;path_programs_.clear();
             std::istringstream roots(search);std::string root;
             std::set<std::string> found;
-            while(std::getline(roots,root,';')) {
+            while(std::getline(roots,root,platform::path_list_separator)) {
                 if(root.empty())continue;
                 std::error_code error;
-                for(std::filesystem::directory_iterator walk(text_path(root),std::filesystem::directory_options::skip_permission_denied,error),end;!error && walk!=end;walk.increment(error)) {
-                    auto extension=folded(path_text(walk->path().extension()));
-                    if(extension==".exe" || extension==".cmd" || extension==".bat" || extension==".com")found.insert(path_text(walk->path().stem()));
-                }
+                for(std::filesystem::directory_iterator walk(text_path(root),std::filesystem::directory_options::skip_permission_denied,error),end;!error && walk!=end;walk.increment(error))
+                    if(auto name=platform::program_name(*walk);!name.empty())found.insert(std::move(name));
             }
             path_programs_.assign(found.begin(),found.end());
         }
         names.insert(path_programs_.begin(),path_programs_.end());
-#endif
     }
     // Windows names ignore case, so HELP.COM and help are one name; sorted order leaves the lowercase spelling.
     std::map<std::string,std::string> spellings;
@@ -250,7 +241,7 @@ seed::Ptr Shell::help(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
             break;
         }
         auto executable = ProcessHost::executable_path(symbol->text);
-        if(!Shell::prefer_script(symbol->text) && !executable.empty()) {
+        if(Shell::native_first(symbol->text) && !executable.empty()) {
             out << "native executable: " << executable << "\nNative --help is invoked explicitly.\n";
             break;
         }
@@ -317,7 +308,7 @@ seed::Ptr Shell::inspect(seed::Runtime& r,seed::Node* relation,seed::Ptr context
             if(shell.vocabulary_)out<<shell.vocabulary_->annotation(symbol->text)<<'\n';subject=cell->head;continue;
         }
         auto executable=ProcessHost::executable_path(symbol->text);
-        if(!Shell::prefer_script(symbol->text) && !executable.empty()){out<<"native executable: "<<executable<<"\nUse exec \""<<executable<<"\" \"--help\" for its own documentation.\n";break;}
+        if(Shell::native_first(symbol->text) && !executable.empty()){out<<"native executable: "<<executable<<"\nUse exec \""<<executable<<"\" \"--help\" for its own documentation.\n";break;}
         auto path=shell.find_script(symbol->text);
         if(!path.empty()){
             auto source=read_source(path);auto form=r.read(source);

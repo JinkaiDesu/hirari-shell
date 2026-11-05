@@ -6,27 +6,23 @@
 #include <vector>
 #include <filesystem>
 #include <fstream>
+#include <csignal>
 #include <cstdlib>
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include "hirari/value_wire.hpp"
 #ifdef _WIN32
+#include "hirari/win32.hpp"
 #include <io.h>
 #include <fcntl.h>
 int wmain(int argc,wchar_t** argv) {
     SetConsoleCP(CP_UTF8);SetConsoleOutputCP(CP_UTF8);
     _setmode(_fileno(stdout), _O_BINARY);_setmode(_fileno(stderr), _O_BINARY);
-    std::vector<std::string> a;for(int i=1;i<argc;++i)a.push_back(hirari::win32::narrow(argv[i]));
 #else
 int main(int argc,char** argv) {
-    std::vector<std::string> a;for(int i=1;i<argc;++i)a.emplace_back(argv[i]);
 #endif
+    std::vector<std::string> a;for(int i=1;i<argc;++i)a.push_back(hirari::platform::argument_text(argv[i]));
     std::filesystem::path stream_ack;
-#ifdef _WIN32
-    DWORD ack_size=GetEnvironmentVariableW(L"HIRARI_STREAM_ACK",nullptr,0);
-    if(ack_size){std::wstring value(ack_size,L'\0');value.resize(GetEnvironmentVariableW(L"HIRARI_STREAM_ACK",value.data(),ack_size));stream_ack=value;}
-#else
-    if(auto value=std::getenv("HIRARI_STREAM_ACK"))stream_ack=value;
-#endif
+    if(auto value=hirari::platform::environment("HIRARI_STREAM_ACK"))stream_ack=hirari::platform::native_path(*value);
     if(a.empty())return 2;
     if(a[0]=="job-worker") {
         auto request=hirari::Json::parse(std::cin);auto id=request.at("request_id");
@@ -51,7 +47,6 @@ int main(int argc,char** argv) {
     }
     if(a[0]=="emit"){for(std::size_t i=1;i<a.size();++i)std::cout<<a[i]<<'\n';return 0;}
     if(a[0]=="fail")return 7;
-#ifdef _WIN32
     // Supervision fixtures: identity, live output, duration and exit status.
     // Liveness without a handshake: the producer stamps wall-clock time, then
     // pauses; a consumer reached through a live pipe reads the stamp at once.
@@ -71,21 +66,22 @@ int main(int argc,char** argv) {
     }
     // A producer that ignores write failures, as a SIGPIPE-less program may.
     if(a[0]=="stubborn") {
+#ifndef _WIN32
+        signal(SIGPIPE,SIG_IGN);
+#endif
         for(;;){std::cout<<"x\n"<<std::flush;std::cout.clear();std::this_thread::sleep_for(std::chrono::milliseconds(10));}
     }
     if(a[0]=="head-one") {std::string s;if(std::getline(std::cin,s))std::cout<<s<<'\n';return 0;}
     if(a[0]=="pid-sleep"&&a.size()==2) {
-        std::cout<<GetCurrentProcessId()<<'\n'<<std::flush;
+        std::cout<<hirari::platform::process_id()<<'\n'<<std::flush;
         std::this_thread::sleep_for(std::chrono::milliseconds(std::stoll(a[1])));
         std::cout<<"done\n"<<std::flush;return 0;
     }
     if(a[0]=="exit-code"&&a.size()==2){std::cerr<<"exiting "<<a[1]<<'\n';return std::stoi(a[1]);}
     if(a[0]=="print-env"&&a.size()==2) {
-        auto name=hirari::win32::widen(a[1]);DWORD n=GetEnvironmentVariableW(name.c_str(),nullptr,0);
-        if(!n){std::cout<<"<unset>\n";return 0;}
-        std::wstring s(n,L'\0');s.resize(GetEnvironmentVariableW(name.c_str(),s.data(),n));std::cout<<hirari::win32::narrow(s)<<'\n';return 0;
+        auto value=hirari::platform::environment(a[1]);
+        std::cout<<(value?*value:std::string("<unset>"))<<'\n';return 0;
     }
-#endif
     if(a[0]=="startup-environment") {
         bool inherited=std::getenv("HIRARI_STARTUP") || std::getenv("HIRARI_STARTUP_STATUS");
         std::cout<<(inherited?"STARTUP_ENV_LEAKED\n":"STARTUP_ENV_CLEARED\n");return inherited?7:0;
@@ -98,10 +94,7 @@ int main(int argc,char** argv) {
     if(a[0]=="relay"){std::cout<<std::cin.rdbuf();return 0;}
     if(a[0]=="relay-live"){std::string s;while(std::getline(std::cin,s))std::cout<<s<<'\n'<<std::flush;return 0;}
     if(a[0]=="environment"){
-#ifdef _WIN32
-        DWORD n=GetEnvironmentVariableW(L"HIRARI_WORLD",nullptr,0);std::wstring s(n,L'\0');
-        if(n){auto c=GetEnvironmentVariableW(L"HIRARI_WORLD",s.data(),n);s.resize(c);std::cout<<hirari::win32::narrow(s)<<'\n';}
-#endif
+        if(auto value=hirari::platform::environment("HIRARI_WORLD"))std::cout<<*value<<'\n';
         return 0;
     }
     if(a[0]=="interactive") {

@@ -1,6 +1,6 @@
 #include "hirari/shell.hpp"
 
-#include "hirari/win32.hpp"
+#include "test_support.hpp"
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -30,29 +30,25 @@ void write_file(const std::filesystem::path& p,const std::string& s){
     out<<s.substr(prefix);require(static_cast<bool>(out),"test fixture write failed");
 }
 struct Environment {
-    std::wstring name;std::optional<std::wstring> previous;
-    Environment(std::wstring n,std::wstring value):name(std::move(n)) {
-        DWORD size=GetEnvironmentVariableW(name.c_str(),nullptr,0);
-        if(size){std::wstring s(size,L'\0');auto count=GetEnvironmentVariableW(name.c_str(),s.data(),size);s.resize(count);previous=s;}
-        require(SetEnvironmentVariableW(name.c_str(),value.c_str()),"test environment set failed");
-    }
-    ~Environment(){SetEnvironmentVariableW(name.c_str(),previous?previous->c_str():nullptr);}
+    std::string name;std::optional<std::string> previous;
+    Environment(std::string n,const std::string& value):name(std::move(n)),previous(platform::environment(name)) {platform::set_environment(name,value);}
+    ~Environment(){platform::set_environment(name,previous);}
 };
-std::string env(const wchar_t* key){DWORD n=GetEnvironmentVariableW(key,nullptr,0);if(!n)return {};std::wstring s(n,L'\0');auto count=GetEnvironmentVariableW(key,s.data(),n);s.resize(count);return win32::narrow(s);}
+std::string env(const char* key){return platform::environment(key).value_or(std::string{});}
 struct Fixtures {
     std::filesystem::path before=std::filesystem::current_path(),root;
-    Fixtures(){root=std::filesystem::temp_directory_path()/text_path("Hirari portable Ω "+std::to_string(GetCurrentProcessId())+" "+std::to_string(GetTickCount64()));std::filesystem::create_directories(root);}
+    Fixtures(){root=std::filesystem::temp_directory_path()/text_path("Hirari portable Ω "+std::to_string(platform::process_id())+" "+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));std::filesystem::create_directories(root);}
     ~Fixtures(){std::error_code e;std::filesystem::current_path(before,e);std::filesystem::remove_all(root,e);}
     std::filesystem::path world(const std::string& name,const std::string& source){auto p=root/text_path(name);std::filesystem::create_directories(p);write_file(p/"world.toml","[world]\nname = \"Neutral fixture\"\nversion = 1\n[entry]\nprogram = \"start.seed\"\n");write_file(p/"start.seed",source);return p;}
 };
 void worlds_and_scripts() {
-    Fixtures fixtures;MemoryHost host;Shell shell(host);Environment worldenv(L"HIRARI_WORLD",L"previous world");
+    Fixtures fixtures;MemoryHost host;Shell shell(host);Environment worldenv("HIRARI_WORLD","previous world");
     auto first=fixtures.world("First world Ω","greeting := \"hello\"\ngreeting\n\"READY\"\n");
     require(shell.execute("world open "+quote(path_text(first))),"valid world failed");require(shell.worlds().current().has_value(),"world missing");
-    require(std::filesystem::current_path()==std::filesystem::canonical(first),"world cwd not established");require(env(L"HIRARI_WORLD")==path_text(std::filesystem::canonical(first)),"world env not established");
+    require(std::filesystem::current_path()==std::filesystem::canonical(first),"world cwd not established");require(env("HIRARI_WORLD")==path_text(std::filesystem::canonical(first)),"world env not established");
     auto broken=fixtures.world("Broken world","\"unterminated\n");
     require(!shell.execute("world open "+quote(path_text(broken))),"bad script world succeeded");
-    require(std::filesystem::current_path()==std::filesystem::canonical(first)&&shell.worlds().current()->root==std::filesystem::canonical(first),"world cwd/state rollback failed");require(env(L"HIRARI_WORLD")==path_text(std::filesystem::canonical(first)),"world env rollback failed");
+    require(std::filesystem::current_path()==std::filesystem::canonical(first)&&shell.worlds().current()->root==std::filesystem::canonical(first),"world cwd/state rollback failed");require(env("HIRARI_WORLD")==path_text(std::filesystem::canonical(first)),"world env rollback failed");
     auto missing=fixtures.world("Missing entry","()");std::filesystem::remove(missing/"start.seed");require(!shell.execute("world open "+quote(path_text(missing))),"missing entry accepted");
     auto escaped=fixtures.world("Escaped entry","()");write_file(escaped/"world.toml","[world]\nname='Neutral'\nversion=1\n[entry]\nprogram='../First world Ω/start.seed'\n");rejects([&]{read_world(escaped);},"entry path escaped world");
     auto duplicate=fixtures.world("Duplicate key","()");write_file(duplicate/"world.toml","[world]\nname='Neutral'\nname='Duplicate'\nversion=1\n[entry]\nprogram='start.seed'\n");rejects([&]{read_world(duplicate);},"duplicate key accepted");
@@ -66,10 +62,7 @@ struct InterruptHost:MemoryHost {
     std::atomic<bool> stop{false};
     bool interrupted()override{return stop.exchange(false);}
 };
-bool process_alive(DWORD pid) {
-    HANDLE process=OpenProcess(SYNCHRONIZE,FALSE,pid);if(!process)return false;
-    bool alive=WaitForSingleObject(process,0)==WAIT_TIMEOUT;CloseHandle(process);return alive;
-}
+bool process_alive(unsigned long pid) {return test::alive(pid);}
 // `{ }` stage failures, cancellation, early downstream exit and cleanup.
 void pipeline_failures(Shell& shell,MemoryHost& host) {
     auto run=[&](std::string_view source){auto p=shell.execute(source);if(!p)throw std::runtime_error(std::string(source)+"\n"+host.err);return p;};
@@ -98,7 +91,7 @@ void pipeline_failures(Shell& shell,MemoryHost& host) {
     auto cancelled=cancellable.execute("data bind --cancelled {hirari_test_program stubborn | hirari_test_program pid-sleep 30000}");
     interrupter.join();
     require(cancelled&&ProcessHost::unpack(cancellable.seed(),cancelled,p)&&p.status==130,"interrupt did not end the pipeline");
-    DWORD pid=static_cast<DWORD>(std::stoul(p.out));
+    auto pid=std::stoul(p.out);
     require(!process_alive(pid),"interrupted pipeline left a stage running");
     // { PIPELINE > file }: the last stage writes the file, beyond the capture budget.
     Fixtures sink;auto output=sink.root/"piped.bin";
@@ -112,8 +105,8 @@ void pipeline_failures(Shell& shell,MemoryHost& host) {
 }
 void semantics_and_processes(const std::filesystem::path& helper) {
     Fixtures streaming;
-    Environment stream_ack(L"HIRARI_STREAM_ACK",(streaming.root/L"first output received").wstring());
-    Environment path(L"PATH",helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");MemoryHost host;Shell shell(host);
+    Environment stream_ack("HIRARI_STREAM_ACK",path_text(streaming.root/"first output received"));
+    Environment path("PATH",test::search_path({helper.parent_path()}));MemoryHost host;Shell shell(host);
     auto run=[&](std::string_view source){auto p=shell.execute(source);if(!p)throw std::runtime_error(std::string(source)+"\n"+host.err);return p;};
     run("greeting := \"hello\"");require(shell.seed().print(run("greeting"))=="\"hello\"","binding regression");
     run("\"reverse\" = greeting");require(shell.seed().print(run("greeting"))=="\"reverse\"","inverse binding regression");
@@ -186,7 +179,7 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     {std::ifstream file(output,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(file)),{});require(bytes=="ab", "literal redirection inserted formatting");}
     // { CONSUMER < "file" }: the first stage reads stdin directly from a file.
     {std::ofstream file(output,std::ios::binary);file<<"z\na\n";}
-    // ("sort" is quoted: a bare sort would name Windows' sort.exe as a producer.)
+    // ("sort" is quoted: a bare sort would name the system's sort as a producer.)
     host.out.clear();run("{hirari_test_program \"sort\" < "+destination+"}");
     require(host.out=="a\nz\n","{ < file } did not feed stdin");
     require(ProcessHost::unpack(shell.seed(),run("data bind --sorted {hirari_test_program \"sort\" < "+destination+"}"),p)&&p.out=="a\nz\n",
@@ -276,8 +269,8 @@ void semantics_and_processes(const std::filesystem::path& helper) {
 }
 void shell_programs(const std::filesystem::path& helper) {
     Fixtures fixture;
-    Environment path(L"PATH", helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");
-    Environment namespace_path(L"HIRARI_PATH", fixture.root.wstring());
+    Environment path("PATH", test::search_path({helper.parent_path()}));
+    Environment namespace_path("HIRARI_PATH", path_text(fixture.root));
 
 }
 
@@ -285,12 +278,12 @@ void path_priority(const std::filesystem::path& helper) {
     Fixtures fixture;
     auto preferred=fixture.root/text_path("preferred tools 日本");
     std::filesystem::create_directories(preferred);
-    std::filesystem::copy_file(helper,preferred/L"sort.exe");
-    std::filesystem::create_directory(preferred/L"hirari_test_program");
-    Environment path(L"PATH",preferred.wstring()+L";"+helper.parent_path().wstring()+L";"+win32::widen(env(L"SystemRoot"))+L"\\System32");
+    std::filesystem::copy_file(helper,preferred/("sort"+test::executable_suffix));
+    std::filesystem::create_directory(preferred/"hirari_test_program");
+    Environment path("PATH",test::search_path({preferred,helper.parent_path()}));
     MemoryHost host;Shell shell(host);ProcessResult result;
     auto value=shell.execute("sort emit \"PATH_FIRST\"");
-    require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="PATH_FIRST\n","PATH priority lost to Windows system sort");
+    require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="PATH_FIRST\n","PATH priority lost to the system's sort");
     value=shell.execute("hirari_test_program emit \"DIRECTORY_SKIPPED\"");
     require(value&&ProcessHost::unpack(shell.seed(),value,result)&&result.out=="DIRECTORY_SKIPPED\n","PATH directory masked a native executable");
     value=shell.execute("hirari --eval "+quote("hirari_test_program emit \"RAW_BYTES\""));
@@ -298,9 +291,10 @@ void path_priority(const std::filesystem::path& helper) {
 }
 
 }
-int wmain(int argc,wchar_t** argv) {
+int run_tests(const std::vector<std::string>& argv) {
     try {
-        require(argc==2,"test helper path required");worlds_and_scripts();semantics_and_processes(std::filesystem::path(argv[1]));shell_programs(std::filesystem::path(argv[1]));path_priority(std::filesystem::path(argv[1]));
+        require(argv.size()==2,"test helper path required");const auto helper=text_path(argv[1]);worlds_and_scripts();semantics_and_processes(helper);shell_programs(helper);path_priority(helper);
         std::cout<<"All generic Hirari integration tests passed.\n";return 0;
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }
+HIRARI_TEST_MAIN(run_tests)
