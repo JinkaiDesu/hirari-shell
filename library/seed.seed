@@ -1,0 +1,24 @@
+#!/usr/bin/env hirari
+"""
+Seed, the language of this shell, on one page.
+
+Values     3  2.5  "text"  --name  [1 2 3]  (data record --a 1)  ()
+Run        git "status"       Quote words. --c and --name pass as flags, () an empty argument.
+Apply      a b  ==  a(b)  ==  b | a       Outside { } this | is application, not a pipe.
+Pipes      { git "log" | findstr "fix" > "out.txt" }       | < > >> live only in { }.
+Define     greeting := "hello"            Each use of greeting runs the expression again.
+Keep       data bind --answer (git "status")     Evaluates once and keeps the value.
+Functions  twice := (data list x x) : x   The body is on the left of the binder.
+           add := ((a + b) : b) : a       One binder each. add 1 2 is 3.
+Numbers    1 + 2   3 - 3   a < b   a == b       Operators need spaces: 3 -3 is two values.
+Text       "a" + "b"   data text 3   data integer "12"
+Decide     if (a < b) "yes" "no"   a && b   a || b
+Loop       for --i [1 2 3] (echo i)     while (x < 3) (...)
+Failure    attempt (git "nope")    fail "message"
+Scripts    Save as name.seed and run name "argument", with arg 0, argc and args inside.
+           A first line of text documents it for help --name. source keeps its definitions.
+Lines      A ( that ends its line opens a block of statements. A trailing \ continues a line.
+Comments   # to the end of the line, or #[ nested ]
+Explore    help --name   inspect --name   capability list   EXPR =>   shows one step
+"""
+help --seed

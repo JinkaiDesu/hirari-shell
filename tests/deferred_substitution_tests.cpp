@@ -41,14 +41,14 @@ std::size_t comparisons = 0;
 std::uint64_t chains = 0;
 void compare(const std::string& source, bool inspection = false) {
     seed::Runtime literal(false), deferred(true);
-    Trace left{"", literal.read("-opaque")};
-    Trace right{"", deferred.read("-opaque")};
+    Trace left{"", literal.read("--opaque")};
+    Trace right{"", deferred.read("--opaque")};
     literal.define("emit", emit, &left);
     deferred.define("emit", emit, &right);
     literal.define("twice", twice, &left);
     deferred.define("twice", twice, &right);
-    literal.bind(literal.intern("effect"), literal.read("emit -input"));
-    deferred.bind(deferred.intern("effect"), deferred.read("emit -input"));
+    literal.bind(literal.intern("effect"), literal.read("emit --input"));
+    deferred.bind(deferred.intern("effect"), deferred.read("emit --input"));
     if (inspection) {
         literal.define("help", inspect, &left);
         deferred.define("help", inspect, &right);
@@ -64,10 +64,10 @@ void compare(const std::string& source, bool inspection = false) {
 
 void generated_cases() {
     constexpr std::array binders{"x", "y", "z"};
-    constexpr std::array arguments{"x", "y", "z", "3", "0", "-opaque", "()",
-                                   "\"doc\"", "(emit -input)", "(x() x)", "(<)"};
+    constexpr std::array arguments{"x", "y", "z", "3", "0", "--opaque", "()",
+                                   "\"doc\"", "(emit --input)", "(x() x)", "(<)"};
     constexpr std::array bodies{"x", "y", "z", "(x y)", "(y x)", "(x() x)",
-        "(y() x)", "(z() (x y))", "-(x y)", "(3 x 5)", "(emit x)",
+        "(y() x)", "(z() (x y))", "--(x y)", "(3 x 5)", "(emit x)",
         "(twice x x)", "(\"doc\" x y)", "(x () y)", "(x : y)"};
     for (auto outer : binders) for (auto inner : binders)
         for (auto body : bodies) for (auto first : arguments) for (auto second : arguments)
@@ -86,12 +86,12 @@ void boundaries() {
         "(x() (y() x)) y 3", // Earlier incoming y is intentionally captured.
         "(x() (y() y)) z x", // Later x is not rewritten retroactively to z.
         "(x() (x() x)) y 3", // Original same-identity shadowing.
-        "(x() (y() (twice x x))) (emit -input) 3",
+        "(x() (y() (twice x x))) (emit --input) 3",
         "(x() (y() (twice x x))) effect 3",
-        "(x() (y() -done)) effect 3",
-        "(x() (y() -done)) (emit -input) 3",
-        "(x() (y() (emit x))) -input 3",
-        "(x() (y() (emit x))) -input 3 4",
+        "(x() (y() --done)) effect 3",
+        "(x() (y() --done)) (emit --input) 3",
+        "(x() (y() (emit x))) --input 3",
+        "(x() (y() (emit x))) --input 3 4",
         "(x() (y() (\"doc\" x))) y 3",
         "(x() (\"outer doc\" (y() x))) y 3",
         "(op() (3 op 5)) (<)",
@@ -161,7 +161,7 @@ void real_shell() {
     auto cell = runtime.find_cell(runtime.intern("canonical"));
     auto revision = cell->revision;
     auto metadata = cell->metadata;
-    auto query = runtime.read("help -canonical");
+    auto query = runtime.read("help --canonical");
     auto nodes = runtime.arena().node_count();
     const auto result = runtime.reduce(query);
     require(runtime.is_literal(result) && runtime.arena().node_count() == nodes &&

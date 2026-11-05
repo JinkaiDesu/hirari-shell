@@ -1,0 +1,6 @@
+#!/usr/bin/env hirari
+"""
+Copy files, overwriting. Directories need --r. An existing directory as the last path receives the sources by name.
+cp [--r] "SOURCE" ... "DESTINATION"
+"""
+apply --(provide --files "cp") args?

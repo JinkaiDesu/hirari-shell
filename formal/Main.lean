@@ -5,7 +5,7 @@ open SeedSpec
 def source : Form → String
   | .unit => "()"
   | .symbol x => x
-  | .name t => "-(" ++ source t ++ ")"
+  | .name t => "--(" ++ source t ++ ")"
   | .opaque text => text
   | .app f a => "(" ++ source f ++ " " ++ source a ++ ")"
   | .abs binder body =>

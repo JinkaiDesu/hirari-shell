@@ -38,11 +38,11 @@ int wmain(int argc,wchar_t** argv){
         };
 
         // ---- Jobs: identity, live output, non-terminating wait, ownership --------
-        run("data bind -long (job start "+program+" (data list \"pid-sleep\" \"16000\") (data record -directory "+here+"))");
+        run("data bind --long (job start "+program+" (data list \"pid-sleep\" \"16000\") (data record --directory "+here+"))");
         auto started=json("long");
         require(started.at("timeout_ms").is_null(),"a job acquired an implicit timeout");
         require(started.at("directory")==path_text(root),"job directory option ignored");
-        run("data bind -id (data get long \"id\")");
+        run("data bind --id (data get long \"id\")");
         auto partial=first_output("id");
         require(partial.at("wait")=="timeout"&&partial.at("state")=="running","bounded wait did not report a running job: "+partial.dump());
         auto pid=partial.at("pid").get<unsigned long>();
@@ -55,7 +55,7 @@ int wmain(int argc,wchar_t** argv){
         // A sustained { } pipeline as one job: one hirari process for the job,
         // live stdout while it runs, no implicit timeout, and owned cleanup.
         const auto piped=quote("{hirari_test_program pid-sleep 16000 | hirari_test_program relay-live}");
-        run("data bind -piped (data get (job start "+hirari+" (data list \"--eval\" "+piped+")) \"id\")");
+        run("data bind --piped (data get (job start "+hirari+" (data list \"--eval\" "+piped+")) \"id\")");
         auto streaming=first_output("piped");
         require(streaming.at("wait")=="timeout"&&streaming.at("state")=="running"&&!streaming.at("stdout").get<std::string>().empty(),
                 "pipeline job ended early or never streamed: "+streaming.dump());
@@ -64,7 +64,7 @@ int wmain(int argc,wchar_t** argv){
         auto piped_done=json("job wait piped");
         require(piped_done.at("state")=="succeeded"&&piped_done.at("stdout").get<std::string>().ends_with("done\n")&&!alive(first_stage),
                 "pipeline job did not complete with its streamed output: "+piped_done.dump());
-        run("data bind -endless (data get (job start "+hirari+" (data list \"--eval\" "+
+        run("data bind --endless (data get (job start "+hirari+" (data list \"--eval\" "+
             quote("{hirari_test_program stubborn | hirari_test_program relay-live}")+")) \"id\")");
         auto endless=first_output("endless");
         require(endless.at("state")=="running"&&endless.at("stdout").get<std::string>().starts_with("x\n"),"endless pipeline job did not stream: "+endless.dump());
@@ -72,11 +72,11 @@ int wmain(int argc,wchar_t** argv){
         run("job cancel endless");
         require(json("job wait endless").at("state")=="cancelled"&&!alive(endless_pid),"cancelled pipeline job left its owner running");
 
-        run("data bind -bounded (data get (job start "+program+" (data list \"pid-sleep\" \"30000\") (data record -timeout_ms 100)) \"id\")");
+        run("data bind --bounded (data get (job start "+program+" (data list \"pid-sleep\" \"30000\") (data record --timeout_ms 100)) \"id\")");
         auto expired=json("job wait bounded");
         require(expired.at("state")=="failed"&&expired.at("timed_out")==true&&expired.at("error")=="job timed out","explicit job timeout: "+expired.dump());
 
-        run("data bind -doomed (data get (job start "+program+" (data list \"pid-sleep\" \"30000\")) \"id\")");
+        run("data bind --doomed (data get (job start "+program+" (data list \"pid-sleep\" \"30000\")) \"id\")");
         auto running=first_output("doomed");auto doomed_pid=running.at("pid").get<unsigned long>();
         require(alive(doomed_pid),"job not running before cancel");
         run("job cancel doomed");
@@ -85,7 +85,7 @@ int wmain(int argc,wchar_t** argv){
         auto failed=json("job wait (data get (job start "+program+" (data list \"exit-code\" \"7\")) \"id\")");
         require(failed.at("exit_status")==7&&failed.at("state")=="failed"&&failed.at("stderr")=="exiting 7\n","job exit status/stderr: "+failed.dump());
         rejects("job wait id -1");rejects("job wait \"no-such-job\"");
-        rejects("job start "+program+" (data list \"emit\") (data record -directory \"Z:/no/such/directory\")");
+        rejects("job start "+program+" (data list \"emit\") (data record --directory \"Z:/no/such/directory\")");
 
         // ---- Data: environment, JSON, structured results, records -------------
         require(r.is_unit(run("data env \"HIRARI_SUPERVISION_UNSET\"")),"unset variable is not Unit");
@@ -97,11 +97,11 @@ int wmain(int argc,wchar_t** argv){
         rejects("data env \"A=B\"");
 
         write(root/"manifest.json",R"({"record":{"name":"Example","version":1,"ready":true,"scale":0.5,"pins":["a","b"],"missing":null}})");
-        run("data bind -manifest (data parse-json (data file \"manifest.json\"))");
-        run("data bind -record (data get manifest \"record\")");
+        run("data bind --manifest (data parse-json (data file \"manifest.json\"))");
+        run("data bind --record (data get manifest \"record\")");
         require(text("data get record \"name\"")=="Example","JSON text field");
         require(r.print(run("data get record \"version\""))=="1"&&r.print(run("data get record \"scale\""))=="0.5","JSON numbers");
-        require(r.print(run("data get record \"ready\""))=="-true","JSON boolean");
+        require(r.print(run("data get record \"ready\""))=="--true","JSON boolean");
         require(r.is_unit(run("data get record \"missing\"")),"JSON null is not Unit");
         require(text("data at (data get record \"pins\") 1")=="b","JSON list");
         require(json("data size (data get (data parse-json (hirari_test_program emit \"{\\\"k\\\":[1,2,3]}\")) \"k\")")==3,"JSON from program output");
@@ -112,38 +112,38 @@ int wmain(int argc,wchar_t** argv){
         require(json("data get (hirari_test_program exit-code \"3\") \"status\"")==3,"program status field");
         require(text("data get (hirari_test_program exit-code \"3\") \"stderr\"")=="exiting 3\n","program stderr field");
         require(text("data get (hirari_test_program emit \"out\") \"stdout\"")=="out\n","program stdout field");
-        require(json("data record -name \"x\" \"count\" 2 -flag -true")==Json({{"name","x"},{"count",2},{"flag",true}}),"record construction");
-        require(r.is_name(run("data get (data record -tag -semantic) \"tag\"")),"record lost Name identity");
-        rejects("data record -a 1 -a 2");rejects("data record -odd");
+        require(json("data record --name \"x\" \"count\" 2 --flag --true")==Json({{"name","x"},{"count",2},{"flag",true}}),"record construction");
+        require(r.is_name(run("data get (data record --tag --semantic) \"tag\"")),"record lost Name identity");
+        rejects("data record --a 1 --a 2");rejects("data record --odd");
 
         // ---- Control: iteration, sleep, failure, recovery ----------------------
-        run("data bind -s "+quote(std::string(20000,'x')));
-        run("while (\"\" < s) (data bind -s (provide -regex \"replace\" \"^.\" \"\" s))");
+        run("data bind --s "+quote(std::string(20000,'x')));
+        run("while (\"\" < s) (data bind --s (provide --regex \"replace\" \"^.\" \"\" s))");
         require(text("s").empty(),"20000 loop iterations did not complete");
         auto before=std::chrono::steady_clock::now();run("sleep 0.2");
         require(std::chrono::steady_clock::now()-before>=std::chrono::milliseconds(190),"sleep returned early");
         rejects("sleep -1");rejects("sleep \"soon\"");
         run("same := a() (b() ((a <= b) && (b <= a)))");
-        run("data bind -poll (data get (job start "+program+" (data list \"pid-sleep\" \"500\")) \"id\")");
+        run("data bind --poll (data get (job start "+program+" (data list \"pid-sleep\" \"500\")) \"id\")");
         run("while (same (data get (job wait poll 20) \"wait\") \"timeout\") (sleep 0.02)");
         require(json("job status poll").at("state")=="succeeded","timed polling loop ended before completion");
 
-        run("data bind -oops (attempt (fail \"manifest missing:\" \"x.json\"))");
+        run("data bind --oops (attempt (fail \"manifest missing:\" \"x.json\"))");
         require(text("data get oops \"status\"")=="error"&&text("data get oops \"error\"")=="manifest missing: x.json","attempt error");
-        run("data bind -exited (attempt (hirari_test_program exit-code \"7\"))");
+        run("data bind --exited (attempt (hirari_test_program exit-code \"7\"))");
         require(text("data get exited \"status\"")=="failed"&&r.print(run("data get exited \"exit_status\""))=="7"&&text("data get exited \"error\"")=="exiting 7\n","attempt program failure");
-        run("data bind -fine (attempt (data get record \"name\"))");
+        run("data bind --fine (attempt (data get record \"name\"))");
         require(text("data get fine \"status\"")=="ok"&&text("data get fine \"value\"")=="Example","attempt success");
-        run("data bind -falsy (attempt (if -false \"x\"))");
+        run("data bind --falsy (attempt (if --false \"x\"))");
         require(text("data get falsy \"status\"")=="ok"&&r.is_unit(run("data get falsy \"value\"")),"false value reported as failure");
         require(!shell.execute("if (fail \"not a false value\") \"yes\" \"no\"")&&host.err.find("not a false value")!=std::string::npos,"failure treated as false");host.err.clear();
         require(!shell.execute("fail \"boom\"")&&host.err.find("boom")!=std::string::npos,"fail message lost");host.err.clear();
         run("data print \"continues after failure\"");
 
         // ---- Recursion safety -------------------------------------------------
-        run("down := s() (if (s <= \"\") \"done\" (down (provide -regex \"replace\" \"^.\" \"\" s)))");
+        run("down := s() (if (s <= \"\") \"done\" (down (provide --regex \"replace\" \"^.\" \"\" s)))");
         require(text("down "+quote(std::string(1000,'x')))=="done","1000-level terminating recursion failed");
-        run("forever := x() (if -true (forever x))");
+        run("forever := x() (if --true (forever x))");
         require(!shell.execute("forever 1")&&host.err.find("nested too deeply")!=std::string::npos,"uncontrolled recursion was not refused: "+host.err);host.err.clear();
         require(text("down \"xyz\"")=="done","shell unusable after refusing recursion");
 
@@ -154,19 +154,19 @@ int wmain(int argc,wchar_t** argv){
         }
         {
             write(root/"outer.seed","#!/usr/bin/env hirari\nrun \"inner.seed\"\ndata print \"after-run\"\n");
-            write(root/"inner.seed","#!/usr/bin/env hirari\nwhile -true (exit 5)\ndata print \"after-loop\"\n");
+            write(root/"inner.seed","#!/usr/bin/env hirari\nwhile --true (exit 5)\ndata print \"after-loop\"\n");
             TestHost exit_host;Shell exiting(exit_host);
             exiting.execute_file(root/"outer.seed");
             require(exiting.status()==5&&exit_host.out.find("after")==std::string::npos,"exit did not unwind nested run/while: "+exit_host.out);
         }
         {
             TestHost exit_host;Shell exiting(exit_host);
-            exiting.execute("for -i (data list 1 2 3) (if ((i <= 2) && (2 <= i)) (exit 6) (data print i))");
+            exiting.execute("for --i (data list 1 2 3) (if ((i <= 2) && (2 <= i)) (exit 6) (data print i))");
             require(exiting.status()==6&&exit_host.out=="1\n","exit did not stop a for loop: "+exit_host.out);
         }
         require(json("data get (attempt (exec "+hirari+" \"--eval\" \"exit 3\")) \"exit_status\"")==3,"hirari --eval exit status");
         write(root/"failing.seed","#!/usr/bin/env hirari\nfail \"entry rejected\"\n");
-        run("data bind -script (attempt (exec "+hirari+" \"--file\" \"failing.seed\"))");
+        run("data bind --script (attempt (exec "+hirari+" \"--file\" \"failing.seed\"))");
         require(json("data get script \"exit_status\"")==1&&text("data get script \"error\"").find("failing.seed:2: entry rejected")!=std::string::npos,"script failure diagnostic");
         std::cout<<"PASS job identity/live output/non-terminating wait/cancel/explicit timeout, environment, JSON, program fields, records, while, sleep, polling, attempt, fail, recursion refusal, exit propagation\n";
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';std::filesystem::current_path(std::filesystem::temp_directory_path());return 1;}

@@ -15,6 +15,9 @@ public:
     bool structured(seed::Ptr) const;
     bool opaque(seed::Ptr value) const { return foreign_.contains(value); }
     std::string describe_foreign(seed::Ptr) const;
+    // How a person reads this value. Empty when there is nothing to show, as
+    // for a loop whose bodies all answered Unit.
+    std::string show(seed::Ptr);
     // Linked and external capabilities share the same typed argument contract.
     using LinkedProvider = std::function<Json(const std::vector<Json>&)>;
     void link(std::string identity, std::string description, LinkedProvider);
@@ -22,6 +25,7 @@ public:
     Json pack(seed::Ptr value) { return encode(value); }
     seed::Ptr unpack(const Json& value) { return decode(value); }
 private:
+    std::string show(seed::Ptr, bool top, unsigned depth);
     static bool collection(seed::Runtime&, seed::Ptr, std::vector<seed::Ptr>&, seed::Ptr);
     static seed::Ptr provide(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Ptr data(seed::Runtime&, seed::Node*, seed::Ptr);

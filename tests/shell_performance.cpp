@@ -14,7 +14,7 @@ struct Host : hirari::Host {
     void error(std::string_view text) override { errors += text; }
 };
 constexpr std::array sources{"identity 3", "compose identity identity 3",
-    "canonical identity identity 3", "help -canonical"};
+    "canonical identity identity 3", "help --canonical"};
 constexpr std::array names{"identity", "colon composition", "canonical curry", "metadata help"};
 constexpr int repetitions = 9, count = 1000, warmup = 100;
 void validate(seed::Runtime& runtime, seed::Ptr value, std::size_t case_index) {

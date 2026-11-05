@@ -85,14 +85,22 @@ int main(int argc, char** argv) {
             host.write(std::string("hirari ") + HIRARI_VERSION + "\n");
             return 0;
         }
+        constexpr std::string_view usage =
+            "usage: hirari [FILE.seed [ARGUMENTS ...] | --file FILE [ARGUMENTS ...] | --eval SOURCE | --update [--check] | --version | --help]\n";
         if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h")) {
-            host.write("Usage: hirari [--eval SOURCE | --file PATH [arguments] | --update [--check] | --version]\n"
-                       "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions; open groups and leading-pipe lines continue the current expression.\n"
-                       "--update installs the latest release over this installation. --check only reports: status 10 when an update is available.\n");
+            host.write(usage);
+            host.write("With no arguments, starts the interactive shell. A file is UTF-8 Seed: each statement runs in\n"
+                       "turn and the first failure stops it with FILE:LINE and a nonzero status.\n\n"
+                       "HIRARI_PATH   more folders to find .seed commands in\n"
+                       "HIRARI_STATE  the folder for saved definitions and history; - keeps none\n\n"
+                       "--update installs the latest release over this installation; --check only reports, with status 10 when one is available.\n\n"
+                       "Inside the shell, `help` lists what's there and `help --seed` teaches the language.\n");
             return 0;
         }
+        // A file's name is a first argument that isn't an option, as a #! line passes it.
+        if (!args[0].starts_with("-")) args.insert(args.begin(), "--file");
         if (args.size() < 2 || (args[0] != "--eval" && args[0] != "--file" && args[0] != "--stream-file") || (args[0] == "--eval" && args.size() != 2)) {
-            host.error("usage: hirari [--eval SOURCE | --file PATH [arguments]]\n");
+            host.error(usage);
             return 2;
         }
         if (args[0] == "--eval") shell.execute(args[1]);

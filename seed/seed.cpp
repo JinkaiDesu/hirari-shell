@@ -74,15 +74,15 @@ constexpr std::pair<const char*, const char*> operator_names[] = {
 
 std::string name_spelling(Symbol* symbol) {
     for (auto pair : operator_names)
-        if (symbol->text == pair.first) return "-" + std::string(pair.second);
+        if (symbol->text == pair.first) return "--" + std::string(pair.second);
     // Explicit grouping preserves a raw identity that happens to spell an
     // operator alias, including provider field names and ordinary bindings.
     for (auto pair : operator_names)
-        if (symbol->text == pair.second) return "-(" + symbol->text + ")";
+        if (symbol->text == pair.second) return "--(" + symbol->text + ")";
     if (!symbol->text.empty() && (std::isalpha(static_cast<unsigned char>(symbol->text[0])) ||
         static_cast<unsigned char>(symbol->text[0]) >= 128 || symbol->text[0] == '_'))
-        return "-" + symbol->text;
-    return "-(" + symbol->text + ")";
+        return "--" + symbol->text;
+    return "--(" + symbol->text + ")";
 }
 
 Symbol* named_operation(Runtime& runtime, std::string_view spelling) {
@@ -380,7 +380,7 @@ Ptr program_demand(
 // =
 // -----------------------------------------------------------------------------
 //
-// answer := tool -Value.main  <=>  tool -Value.main = answer
+// answer := tool --Value.main  <=>  tool --Value.main = answer
 //
 // establishes:
 //
@@ -440,7 +440,7 @@ Ptr program_flow(Runtime& runtime, Node* relation, Ptr) {
 Ptr program_apply(Runtime& runtime, Node* relation, Ptr) {
     auto terms=runtime.terms(relation);
     if(terms.empty() || !is_symbol_text(runtime,terms.front(),"apply"))return relation;
-    if(terms.size()!=3)throw std::runtime_error("usage: apply -PROGRAM -(ARGUMENTS ...)");
+    if(terms.size()!=3)throw std::runtime_error("usage: apply --PROGRAM --(ARGUMENTS ...)");
     auto program=runtime.reduce(terms[1]);auto arguments=runtime.reduce(terms[2]);
     if(!runtime.is_name(program) || !runtime.is_name(arguments))throw std::runtime_error("apply requires reified program and argument products");
     auto head=runtime.as_name(program)->target,tail=runtime.as_name(arguments)->target;
@@ -652,7 +652,7 @@ Ptr program_head(
 // for :element domain body
 //
 // Multi-term branches/bodies are grouped. A reified product is a data domain:
-// for -item -("a" "b") (consumer item)
+// for --item --("a" "b") (consumer item)
 // The iteration binding is restored, including when a body throws.
 Ptr demand_program_form(Runtime& runtime, Ptr form) {
     if (runtime.is_relation(form)) {
@@ -734,7 +734,7 @@ Ptr program_boolean(Runtime& runtime, Node* relation, Ptr) {
 // -----------------------------------------------------------------------------
 //
 // An operator is a standalone symbol. Attached spellings keep their meaning:
-// -3 is a number, -foo a Name, *cell reads a cell. So (3 - 3) is 0 while
+// -3 is a number, --foo a Name, *cell reads a cell. So (3 - 3) is 0 while
 // (3 -3) is the product of 3 and -3.
 
 struct OperatorCall {
@@ -1386,8 +1386,12 @@ Ptr Arena::make_number(std::string_view spelling) {
     auto first = spelling.data(), last = first + spelling.size();
     auto result = real ? std::from_chars(first, last, value->real)
                        : std::from_chars(first, last, value->integer);
-    if (result.ec != std::errc{} || result.ptr != last || (real && !std::isfinite(value->real)))
-        throw std::runtime_error("invalid or out-of-range numeric literal");
+    if (result.ec != std::errc{} || result.ptr != last || (real && !std::isfinite(value->real))) {
+        const bool operators = spelling.find_first_of("+*/") != std::string_view::npos ||
+                               spelling.find('-', 1) != std::string_view::npos;
+        throw std::runtime_error("invalid or out-of-range number: " + std::string(spelling) +
+                                 (operators ? " (arithmetic needs spaces: 1 + 2)" : ""));
+    }
     Ptr raw = value.get();
     numbers_.push_back(std::move(value));
     record(raw, real ? HostKind::Real : HostKind::Integer);
@@ -1640,10 +1644,11 @@ Ptr Reader::read_form() {
         throw std::runtime_error("unexpected ']'");
     } else if (peek() == '{') {
         form = read_pipeline();
-    } else if (peek() == '-' && (peek(1) == '(' || peek(1) == '{' ||
-        std::isalpha(static_cast<unsigned char>(peek(1))) ||
-        static_cast<unsigned char>(peek(1)) >= 128 || peek(1) == '_')) {
-        bool grouped = peek(1) == '(' || peek(1) == '{';
+    } else if (peek() == '-' && peek(1) == '-' && (peek(2) == '(' || peek(2) == '{' ||
+        std::isalpha(static_cast<unsigned char>(peek(2))) ||
+        static_cast<unsigned char>(peek(2)) >= 128 || peek(2) == '_')) {
+        bool grouped = peek(2) == '(' || peek(2) == '{';
+        take();
         take();
         Ptr target = read_form();
         if (!grouped && runtime_.is_symbol(target)) target = named_operation(runtime_, runtime_.as_symbol(target)->text);
@@ -1908,7 +1913,9 @@ Ptr Reader::read_symbol() {
 
     if (token.empty()) {
         throw std::runtime_error(
-            "expected symbol"
+            eof()
+                ? std::string("expected symbol")
+                : "unexpected '" + std::string(1, peek()) + "'"
         );
     }
 
@@ -2013,10 +2020,10 @@ std::string Printer::native_form(
             if (
                 runtime_.is_unit(target)
             ) {
-                return "-()";
+                return "--()";
             }
 
-            return "-" +
+            return "--" +
                 structural_form(
                     target
                 );
@@ -2027,7 +2034,7 @@ std::string Printer::native_form(
                 static_cast<Cell*>(form);
 
             if (!cell->symbol) {
-                return "@ -()";
+                return "@ --()";
             }
 
             return
@@ -2178,10 +2185,10 @@ std::string Printer::structural_member(
             if (
                 runtime_.is_unit(target)
             ) {
-                return "(-())";
+                return "(--())";
             }
 
-            return "(-" +
+            return "(--" +
                 structural_form(
                     target
                 ) +
@@ -2193,7 +2200,7 @@ std::string Printer::structural_member(
                 static_cast<Cell*>(form);
 
             if (!cell->symbol) {
-                return "((@)(-()))";
+                return "((@)(--()))";
             }
 
             return
@@ -2255,7 +2262,7 @@ std::string Printer::structural_form(
             runtime_.as_cell(form);
 
         if (!cell->symbol) {
-            return "((@)(-()))";
+            return "((@)(--()))";
         }
 
         return
@@ -2547,20 +2554,20 @@ Runtime::Runtime()
     define("&&", &program_boolean);
     define("||", &program_boolean);
     for (auto op : {"<", "<=", ">", ">=", "==", "!="}) define(op, &program_compare);
-    describe("<", "A < B | < A B\nStrict ordering of two numbers or two strings. -lt names this Program.");
-    describe("<=", "A <= B | <= A B\nOrdering or equal value of two numbers or two strings. -le names this Program.");
-    describe(">", "A > B | > A B\nGreater than, for two numbers or two strings. -gt names this Program. "
+    describe("<", "A < B | < A B\nStrict ordering of two numbers or two strings. --lt names this Program.");
+    describe("<=", "A <= B | <= A B\nOrdering or equal value of two numbers or two strings. --le names this Program.");
+    describe(">", "A > B | > A B\nGreater than, for two numbers or two strings. --gt names this Program. "
              "Output redirection is written inside { }: { PRODUCER > \"file\" }.");
-    describe(">=", "A >= B | >= A B\nGreater than or equal, for two numbers or two strings. -ge names this Program.");
+    describe(">=", "A >= B | >= A B\nGreater than or equal, for two numbers or two strings. --ge names this Program.");
     describe("==", "A == B | == A B\nEqual values: numbers by value, strings by bytes, Names by identity or "
-             "structure. Different kinds are unequal, not an error. -eq names this Program.");
-    describe("!=", "A != B | != A B\nNot equal: the negation of ==. -ne names this Program.");
+             "structure. Different kinds are unequal, not an error. --eq names this Program.");
+    describe("!=", "A != B | != A B\nNot equal: the negation of ==. --ne names this Program.");
     for (auto op : {"+", "-", "/"}) define(op, &program_arithmetic);
     define(">>", &program_append_outside_braces);
     describe(">>", "{ PRODUCER >> \"file\" }\nAppend output to a file. Only meaningful inside { }.");
     describe("+", "A + B | + A B\nAdd two numbers, or join two strings. Integers stay exact (overflow fails); "
              "any real operand gives a real. Write the operator with spaces: (3 + 3).");
-    describe("-", "A - B | - A\nSubtract, or negate one number. Attached -3 is a number and -foo a Name, "
+    describe("-", "A - B | - A\nSubtract, or negate one number. Attached -3 is a number and --foo a Name, "
              "so (3 - 3) is 0 while (3 -3) is the product 3 -3.");
     describe("/", "A / B\nDivide. Exact integer division stays an integer; otherwise the quotient is real. "
              "Dividing by zero fails.");

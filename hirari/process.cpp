@@ -589,7 +589,7 @@ ProcessHost::ProcessHost(
     // Outside braces | remains Seed's reverse application. OS pipes exist only
     // in the explicit `{ }` context, which the reader lowers to ({} BODY).
     runtime.define("{}", &ProcessHost::pipeline, this);
-    runtime.describe("{}", "{ PRODUCER | CONSUMER ... }  { CONSUMER < \"in\" }  { PRODUCER > \"out\" }  { PRODUCER >> \"out\" }\nPOSIX stream context. Inside braces | is a real OS pipe, < reads the first stage's stdin from a file, > writes and >> appends the last stage's stdout to a file. Every stage is a native process (a PATH executable or exec \"path\" ...); stages run concurrently with ordinary backpressure. A Seed value can also be written: { VALUE > \"file\" } writes text as bytes and structured values as a hirari.values/1 envelope. At top level output streams to the terminal; CONSUMER {PIPELINE} feeds a native consumer live. The answer is -stdout -stderr -status, plus -stages with each stage status. Outside braces | is reverse application (b | a == a b == a(b)) and < > compare values.");
+    runtime.describe("{}", "{ PRODUCER | CONSUMER ... }  { CONSUMER < \"in\" }  { PRODUCER > \"out\" }  { PRODUCER >> \"out\" }\nPOSIX stream context. Inside braces | is a real OS pipe, < reads the first stage's stdin from a file, > writes and >> appends the last stage's stdout to a file. Every stage is a native process (a PATH executable or exec \"path\" ...); stages run concurrently with ordinary backpressure. A Seed value can also be written: { VALUE > \"file\" } writes text as bytes and structured values as a hirari.values/1 envelope. At top level output streams to the terminal; CONSUMER {PIPELINE} feeds a native consumer live. The answer is --stdout --stderr --status, plus --stages with each stage status. Outside braces | is reverse application (b | a == a b == a(b)) and < > compare values.");
 }
 
 ProcessHost::~ProcessHost() { conpty_.reset(); }
@@ -854,7 +854,7 @@ seed::Ptr ProcessHost::pipeline(
     if (!io.output.empty()) return self->run_pipeline(runtime, std::move(stages), false, widen(io.output), io.append);
 #endif
     // A pipeline evaluated as the foreground form streams to the shell's own
-    // output as bytes arrive; nested ones answer -stdout -stderr -status.
+    // output as bytes arrive; nested ones answer --stdout --stderr --status.
     return self->run_pipeline(runtime, std::move(stages), runtime.reduction_depth() == self->foreground_depth_);
 }
 
@@ -1110,7 +1110,7 @@ std::string ProcessHost::argument(
             )
         ) {
             auto flag = runtime.print(value);
-            if (flag.starts_with("-(")) return "-" + runtime.as_symbol(target)->text;
+            if (flag.starts_with("--(")) return "--" + runtime.as_symbol(target)->text;
             return flag;
         }
 
