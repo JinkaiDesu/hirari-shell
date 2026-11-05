@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "test_support.hpp"
 #include "hirari/value_wire.hpp"
 #include <chrono>
 #include <filesystem>
@@ -10,16 +10,16 @@ using namespace hirari;
 void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 std::string quote(std::string_view s){std::string out="\"";for(char c:s){if(c=='\\'||c=='"')out+='\\';out+=c;}return out+'"';}
 struct TestHost:Host{std::string out,err;void write(std::string_view s)override{out+=s;}void error(std::string_view s)override{err+=s;}};
-int wmain(int argc,wchar_t** argv){
-    auto root=std::filesystem::temp_directory_path()/(L"Hirari providers 日本 "+std::to_wstring(GetCurrentProcessId()));
+int run_tests(const std::vector<std::string>& argv){
+    auto root=std::filesystem::temp_directory_path()/text_path("Hirari providers 日本 "+std::to_string(platform::process_id()));
     try{
-        require(argc==3,"library and worker fixture paths required");std::filesystem::create_directories(root);
-        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"vocabulary").c_str());
+        require(argv.size()==3,"library and worker fixture paths required");std::filesystem::create_directories(root);
+        platform::set_environment("HIRARI_STATE",path_text(root/"vocabulary"));
         TestHost host;Shell shell(host);auto& r=shell.seed();
         auto run=[&](std::string s){auto p=shell.execute(s);if(!p)throw std::runtime_error(s+": "+host.err);return p;};
         auto json=[&](std::string s){return Json::parse(r.as_literal(run("data json ("+s+")"))->bytes);};
         auto rejects=[&](std::string s){require(!shell.execute(s),"invalid operation succeeded");host.err.clear();};
-        auto library=quote(win32::narrow(argv[1]));
+        auto library=quote(argv[1]);
         run("capability register-library --fixture "+library+" \"Neutral test provider\"");
         run("capability register-library --fixture "+library);
         run("data print (provide --fixture \"next\")");
@@ -38,7 +38,7 @@ int wmain(int argc,wchar_t** argv){
         run("capability unregister --fixture");run("capability register-library --fixture "+library);
         rejects("provide --fixture \"echo\" ref");
 
-        const std::string worker=quote(win32::narrow(argv[2]));
+        const std::string worker=quote(argv[2]);
         auto start=[&](std::string mode,Json options=Json::object()){
             auto file=root/L"options.json";std::ofstream out(file);out<<Json{{"protocol","hirari.values/1"},{"value",pack_value(options)}};out.close();
             auto result=json("provide --jobs \"start\" "+worker+" (data list \"job-worker\" "+quote(mode)+") (data read "+quote(path_text(file))+")");
@@ -70,3 +70,4 @@ int wmain(int argc,wchar_t** argv){
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     std::error_code error;std::filesystem::remove_all(root,error);return 0;
 }
+HIRARI_TEST_MAIN(run_tests)

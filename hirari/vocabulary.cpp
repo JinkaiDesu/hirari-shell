@@ -1,5 +1,13 @@
 #include "hirari/vocabulary.hpp"
+#ifdef _WIN32
 #include "hirari/win32.hpp"
+#else
+#include <chrono>
+#include <thread>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 #include "hirari/world.hpp"
 #include <fstream>
 #include <map>
@@ -94,6 +102,11 @@ void Vocabulary::append(Revision v) {
     for(int attempt=0;attempt<100;++attempt){lock=CreateFileW(lockpath.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(lock!=INVALID_HANDLE_VALUE)break;if(GetLastError()!=ERROR_SHARING_VIOLATION)break;Sleep(10);}
     if(lock==INVALID_HANDLE_VALUE)throw std::runtime_error("vocabulary is busy or not writable");
     struct Close{HANDLE h;~Close(){CloseHandle(h);}}guard{lock};
+#else
+    int lock=open((directory_/"write.lock").c_str(),O_RDWR|O_CREAT|O_CLOEXEC,0600);
+    if(lock<0)throw std::runtime_error("vocabulary is busy or not writable");
+    struct Close{int fd;~Close(){close(fd);}}guard{lock};
+    for(int attempt=0;;++attempt){if(!flock(lock,LOCK_EX|LOCK_NB))break;if(attempt>=100)throw std::runtime_error("vocabulary is busy or not writable");std::this_thread::sleep_for(std::chrono::milliseconds(10));}
 #endif
     auto revisions=read();if(revisions.size()>=records)throw std::runtime_error("vocabulary history is full; export it before resetting");
     v.number=revisions.size()+1;revisions.push_back(std::move(v));std::string out="HVOC1\n";
@@ -107,7 +120,11 @@ void Vocabulary::append(Revision v) {
     bool flushed=FlushFileBuffers(pending)!=0;CloseHandle(pending);
     if(!flushed || !MoveFileExW(temp.c_str(),file.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("cannot commit vocabulary; previous snapshot preserved");
 #else
-    std::filesystem::rename(temp,file);
+    int pending=open(temp.c_str(),O_WRONLY|O_CLOEXEC);
+    if(pending<0)throw std::runtime_error("cannot flush vocabulary snapshot");
+    bool flushed=fsync(pending)==0;close(pending);
+    std::error_code moved;if(flushed)std::filesystem::rename(temp,file,moved);
+    if(!flushed||moved)throw std::runtime_error("cannot commit vocabulary; previous snapshot preserved");
 #endif
 }
 void Vocabulary::save(seed::Runtime& r,const std::string& name,const std::string& annotation,const std::function<bool(seed::Ptr)>& opaque) {

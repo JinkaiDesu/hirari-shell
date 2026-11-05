@@ -1,0 +1,63 @@
+#!/usr/bin/env hirari
+"""
+A hirari release archive works on its own: unpacked far from any source or build folder, every file
+matches its receipt, and the packaged shell runs Seed, its library and ordinary programs.
+
+hirari tests/release.tests.seed "ARCHIVE" "VERSION"
+"""
+data env "LC_ALL" "C"
+data bind --archive (arg 0)
+data bind --version (arg 1)
+data bind --passed 0
+check := okay() (name() (
+    if okay () (fail ("FAIL: " + name))
+    data bind --passed (passed + 1)
+    data print ("PASS " + name)
+))
+contains := pattern() (text() (provide --regex "match" pattern text))
+output := answer() (data get answer "stdout")
+
+data bind --root (provide --regex "replace" "\n$" "" (output (exec "mktemp" "-d" "--tmpdir" "hirari release XXXXXXXX")))
+data bind --done (exec "tar" "-xf" archive "-C" root)
+data bind --receipt (data parse-json (data file (path root "release.receipt.json")))
+check ((data get receipt "version") == version) ("the receipt names " + version)
+
+data bind --matching 0
+data bind --done (for --file (data get receipt "files") (
+    data bind --sum (output (exec "sha256sum" (path root (data get file "path"))))
+    if ((provide --regex "replace" " .*\n$" "" sum) == (data get file "sha256")) (data bind --matching (matching + 1)) ()
+    ()
+))
+data bind --count (data integer (provide --regex "replace" "\n$" "" (output {exec "find" root "-type" "f" | exec "wc" "-l"})))
+check ((matching == (data size (data get receipt "files"))) && ((matching + 1) == count)) "every file matches the receipt, and nothing else is there"
+data bind --done (for --file ["hirari" "LICENSE" "NOTICE" "Commands/regex.seed" "Commands/ls.seed" "Commands/seed.seed" "Licenses/regex-library.lock.json"] (
+    check ((data get (exec "test" "-f" (path root file)) "status") == 0) ("ships " + file)
+    ()
+))
+
+data bind --hirari (path root "hirari")
+cd (provide --regex "replace" "\n$" "" (output (exec "dirname" root)))
+check (contains ("^hirari " + version) (output (exec hirari "--version"))) ("reports version " + version)
+check (contains "3" (output (exec hirari "--eval" "(1 + 2)"))) "evaluates Seed"
+check (contains "--update" (output (exec hirari "--help"))) "offers self-update"
+check (contains "(?i)regex" (output (exec hirari "--eval" "help --regex"))) "finds its packaged Seed library"
+check (contains "Linux" (output (exec hirari "--eval" "uname"))) "runs an ordinary program from PATH"
+check (contains "Functions" (output (exec hirari "--eval" "help --seed"))) "teaches the language"
+check ((output (exec hirari "--eval" "ECHO \"hello\" 3")) == "hello 3\n") "prints text as itself"
+check ((output (exec hirari "--eval" "echo \"hello\" 3")) == "hello 3\n") "its own commands answer before PATH's"
+check (contains "usr" (output (exec hirari "--eval" "data get {ls \"/\" | cat} \"stdout\""))) "a { } stage is the native program"
+check (contains "usr" (output (exec hirari "--eval" "exec \"ls\" \"/\""))) "PATH's program of the same name still runs by exec"
+data bind --argv (path root "argv.sh")
+{ "#!/bin/sh\nprintf '[%s]' \"$@\"\n" > argv }
+data bind --done (exec "chmod" "+x" argv)
+check ((output (exec hirari "--eval" ("exec " + (data json argv) + " \"a b\" \"it's\" \"\" \"$HOME\" \"*\""))) == "[a b][it's][][$HOME][*]") "a shell script runs by its #! line, and argv reaches it unparsed"
+data bind --script (path root "script.seed")
+{ "data print \"got\" (arg 0)" > script }
+check ((output (exec hirari script "it")) == "got it\n") "runs a file named on the command line"
+data bind --files (path root "files")
+data bind --done (exec "mkdir" files)
+data bind --file-script (path root "files.seed")
+{ "cd (arg 0)\nmkdir \"a/b\"\n{ \"text\" > \"a/f.txt\" }\ncp \"a/f.txt\" \"a/g.txt\"\nmv \"a/g.txt\" \"a/h.txt\"\nrm \"a/f.txt\"\nls \"a\"\ncat \"a/h.txt\"\nrm --r \"a\"\nls" > file-script }
+check ((output (exec hirari file-script files)) == "b/\nh.txt\ntext\n") "the file commands work together"
+data bind --done (exec "rm" "-rf" root)
+data print ("HIRARI_RELEASE_OK tests=" + (data text passed))

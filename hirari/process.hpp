@@ -1,6 +1,6 @@
 #pragma once
 
-#include "hirari/conpty.hpp"
+#include "hirari/terminal.hpp"
 #include "hirari/host.hpp"
 #include "seed/seed.hpp"
 
@@ -50,7 +50,7 @@ public:
     // Explicit executable paths are values, not parser tokens or shell command strings.
     seed::Ptr execute(seed::Runtime&, const std::string& path, const std::vector<seed::Ptr>& arguments, seed::Node* invocation = nullptr, std::optional<ProcessResult> input = {});
     seed::Ptr redirect(seed::Runtime&, seed::Ptr producer, const std::string& path, bool append);
-    struct StreamProgram { std::wstring executable; std::vector<std::string> prefix; };
+    struct StreamProgram { std::string executable; std::vector<std::string> prefix; };
     void stream_resolver(std::function<StreamProgram(seed::Symbol*)> resolver) { stream_resolver_ = std::move(resolver); }
     void streaming(bool enabled) { streaming_ = enabled; }
     void opaque_values(std::function<bool(seed::Ptr)> predicate) { opaque_values_ = std::move(predicate); }
@@ -58,7 +58,7 @@ public:
     // `{ VALUE > "file" }` when the producer is not a native process.
     using ValueWriter = std::function<void(seed::Runtime&, seed::Ptr, const std::string&, bool)>;
     void value_writer(ValueWriter writer) { value_writer_ = std::move(writer); }
-    void worker(std::wstring directory, std::function<void(std::string_view,bool)> observer,
+    void worker(std::string directory, std::function<void(std::string_view,bool)> observer,
                 std::function<void(unsigned long)> spawned = {}) {
         working_directory_=std::move(directory);output_observer_=std::move(observer);spawn_observer_=std::move(spawned);allow_breakaway_=false;
     }
@@ -98,7 +98,7 @@ private:
         ProcessHost* owner = nullptr;
         seed::Symbol* symbol = nullptr;
 
-        std::wstring executable;
+        std::string executable;
         std::vector<std::string> prefix;
         bool script = false;
     };
@@ -110,7 +110,7 @@ private:
             arguments;
         std::optional<ProcessResult> input;
         // `{ CONSUMER < "file" ... }`: stdin read directly from a file.
-        std::wstring input_file;
+        std::string input_file;
     };
 
     // The stream operators of one `{ }` context, removed from its body.
@@ -173,7 +173,7 @@ private:
         seed::Runtime& runtime,
         std::vector<Stage> stages,
         bool passthrough = false,
-        const std::wstring& output_file = {}, bool append = false
+        const std::string& output_file = {}, bool append = false
     );
 
     std::string argument(
@@ -197,19 +197,19 @@ private:
         std::unique_ptr<ForeignProgram>
     > programs_;
     std::unordered_map<seed::Symbol*, std::unique_ptr<ForeignProgram>> stream_programs_;
-    std::unordered_map<std::wstring, std::unique_ptr<ForeignProgram>> explicit_programs_;
+    std::unordered_map<std::string, std::unique_ptr<ForeignProgram>> explicit_programs_;
     std::function<StreamProgram(seed::Symbol*)> stream_resolver_;
     bool streaming_ = false;
     std::function<bool(seed::Ptr)> opaque_values_;
     ValueWriter value_writer_;
-    std::wstring working_directory_;
+    std::string working_directory_;
     std::function<void(std::string_view,bool)> output_observer_;
     // Observes each owned child after it joins this pipeline's job object.
     std::function<void(unsigned long)> spawn_observer_;
     bool allow_breakaway_=true;
 
-    std::unique_ptr<ConPtySession>
-        conpty_;
+    std::unique_ptr<TerminalSession>
+        terminal_;
 
     seed::Ptr foreground_root_ =
         nullptr;

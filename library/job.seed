@@ -1,6 +1,6 @@
 #!/usr/bin/env hirari
 """Run and observe background programs without giving up the shell.
-job start "program.exe" (data list "argument" ...) [OPTIONS]
+job start "program" (data list "argument" ...) [OPTIONS]
 job status ID | job wait ID [TIMEOUT_MS] | job cancel ID | job forget ID | job list
 OPTIONS is a record, e.g. (data record --timeout_ms 60000 --directory "C:/work").
 A job runs until it exits or is cancelled; only timeout_ms terminates it.

@@ -9,6 +9,7 @@
 #include "hirari/jobs.hpp"
 #include "hirari/control.hpp"
 #include "hirari/line_editor.hpp"
+#include "hirari/console.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -102,6 +103,10 @@ private:
     std::filesystem::path find_script(const std::string& name, bool explicit_file = false) const;
     struct ScriptProgram { Shell* shell; std::filesystem::path path; };
     static bool prefer_script(std::string_view);
+    // What hirari itself ships under this name, if anything.
+    static std::filesystem::path installed_command(const std::string& name);
+    // True when a PATH program answers to this name before any Seed command.
+    static bool native_first(const std::string& name);
     struct ScriptFrame { std::filesystem::path path; std::vector<seed::Ptr> arguments; };
     std::unordered_map<seed::Symbol*, std::unique_ptr<ScriptProgram>> scripts_;
     std::vector<ScriptFrame> script_frames_;

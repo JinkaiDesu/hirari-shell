@@ -3,18 +3,18 @@
 hirari is a shell, and Seed is its language. Seed owns values, names, bindings
 and evaluation. hirari owns program resolution, live process pipelines,
 interactive terminal programs, background jobs and optional typed providers.
-It runs natively on Windows today; a Linux version is planned. Pre-alpha
-builds for Windows x64 are at https://emergencetech.co.
+It runs natively on Windows and Linux. Pre-alpha builds for Windows x64 and
+Linux x64 (glibc 2.39 or newer) are at https://emergencetech.co.
 
 ## Build
 
-On Windows, you need CMake 3.24 or newer and a C++23 toolchain with ConPTY.
+You need CMake 3.24 or newer and a C++23 toolchain: on Windows, one with ConPTY.
 
 ```powershell
 cmake -S . -B build
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
-./build/Release/hirari.exe
+./build/Release/hirari.exe    # ./build/hirari on Linux
 ```
 
 `cmake --install build --config Release --component hirari --prefix <dir>`
@@ -26,7 +26,8 @@ writes a release folder. An installed shell needs no development toolchain.
 - `hirari FILE.seed [ARGUMENTS]` runs a UTF-8 script, and `hirari --eval SOURCE` evaluates one expression.
 - Source errors report the file and line, stop execution and return nonzero.
 - At the prompt, Tab completes names and paths, Up and Ctrl+R search the saved history, and the arrows, Home, End and Ctrl+A/E/K/U/W/Y edit the line.
-- `echo`, `cat`, `ls`, `mkdir`, `rm`, `cp` and `mv` are built in, unless `PATH` has a program of that name.
+- `echo`, `cat`, `ls`, `mkdir`, `rm`, `cp` and `mv` are hirari's own, ahead of `PATH`; a program of the same name runs by its path, and inside `{ }`, where stages are native programs.
+- `provide --files "list" "PATH"` answers a directory as records. Commands answer data, and printing is a view of it.
 - `help --seed` teaches the language on one page.
 - `hirari --update` installs the latest release over this installation, and `hirari --update --check` only reports it (status 10 when an update is available).
 

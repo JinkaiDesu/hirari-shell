@@ -1,0 +1,42 @@
+#!/usr/bin/env hirari
+"""
+hirari's Linux release package: hirari-<version>-linux-x64.tar.gz, the release folder `cmake --install` writes, with
+release.receipt.json naming every file's size and SHA-256. Files go in a fixed order with fixed owners and timestamps,
+so the same build gives the same bytes. The archive is then checked on its own (tests/release.tests.seed).
+
+hirari tools/package.seed "BUILD" "OUT"   from the repository's root, using the hirari just built
+"""
+data env "LC_ALL" "C"
+data bind --repo (provide --regex "replace" "\n$" "" (data get (exec "pwd") "stdout"))
+data bind --build (path repo (arg 0))
+data bind --out (path repo (arg 1))
+data bind --version (data get (data at (data get (provide --regex "parse" "project\(Hirari VERSION (?<version>[0-9.]+)" (data file "CMakeLists.txt")) "rows") 0) "version")
+
+data bind --folder (path build "package")
+data bind --done (exec "rm" "-rf" folder)
+data bind --done (exec "cmake" "--install" build "--component" "hirari" "--strip" "--prefix" folder)
+data bind --done (exec "chmod" "-R" "u=rwX,go=rX" folder)
+
+# Native tools answer as text, and text is what the receipt's order is decided in.
+data bind --listing (data get {exec "find" folder "-type" "f" "-printf" "%P\t%s\n" | exec "sort"} "stdout")
+data bind --files ""
+data bind --separator ""
+data bind --done (for --row (data get (provide --regex "parse" "(?<path>[^\t\n]+)\t(?<size>[0-9]+)" listing) "rows") (
+    data bind --sum (data get (exec "sha256sum" (path folder (data get row "path"))) "stdout")
+    data bind --hash (provide --regex "replace" "^([0-9a-f]+).*\n$" "$1" sum)
+    data bind --record (data json (data record --path (data get row "path") --size (data integer (data get row "size")) --sha256 hash))
+    data bind --files (files + separator + record)
+    data bind --separator ","
+    ()
+))
+data bind --receipt ("{\"schemaVersion\":1,\"name\":\"hirari\",\"version\":\"" + version + "\",\"files\":[" + files + "]}\n")
+{ receipt > (path folder "release.receipt.json") }
+data bind --done (exec "chmod" "go=r,u=rw" (path folder "release.receipt.json"))
+
+data bind --done (exec "mkdir" "-p" out)
+data bind --archive (path out ("hirari-" + version + "-linux-x64.tar.gz"))
+cd folder
+{ exec "tar" "--sort=name" "--mtime=@946684800" "--owner=0" "--group=0" "--numeric-owner" "--format=gnu" "-cf" "-" "." | exec "gzip" "-n" "-9" > archive }
+cd repo
+run (path (script-directory) ".." "tests" "release.tests.seed") archive version
+data print "packaged" archive

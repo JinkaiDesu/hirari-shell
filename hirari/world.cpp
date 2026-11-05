@@ -1,5 +1,5 @@
 #include "hirari/world.hpp"
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include <charconv>
 #include <fstream>
 #include <map>
@@ -45,32 +45,13 @@ std::string string_value(const std::string& s) {
         }else out+=c;
     }return out;
 }
-std::optional<std::wstring> environment() {
-#ifdef _WIN32
-    SetLastError(ERROR_SUCCESS);DWORD n=GetEnvironmentVariableW(L"HIRARI_WORLD",nullptr,0);
-    if(!n){if(GetLastError()==ERROR_ENVVAR_NOT_FOUND)return std::nullopt;return std::wstring{};}
-    std::wstring s(n,L'\0');DWORD count=GetEnvironmentVariableW(L"HIRARI_WORLD",s.data(),n);
-    if(count>=n)throw std::runtime_error("world environment changed concurrently");s.resize(count);return s;
-#else
-    return std::nullopt;
-#endif
-}
-void environment(const std::optional<std::wstring>& value) {
-#ifdef _WIN32
-    if(!SetEnvironmentVariableW(L"HIRARI_WORLD",value?value->c_str():nullptr))throw std::runtime_error("cannot set HIRARI_WORLD");
-#else
-    (void)value;throw std::runtime_error("world environment requires Windows");
-#endif
-}
+std::optional<std::string> environment() { return platform::environment("HIRARI_WORLD"); }
+void environment(const std::optional<std::string>& value) { platform::set_environment("HIRARI_WORLD",value); }
 }
 std::string path_text(const std::filesystem::path& path){auto s=path.u8string();return std::string(reinterpret_cast<const char*>(s.data()),s.size());}
 std::filesystem::path text_path(const std::string& s) {
     if(s.find('\0')!=std::string::npos)throw std::runtime_error("NUL is invalid in a path");
-#ifdef _WIN32
-    return std::filesystem::path(win32::widen(s));
-#else
-    return std::filesystem::path(s);
-#endif
+    return platform::native_path(s);
 }
 std::string read_source(const std::filesystem::path& path) {
     std::ifstream in(path,std::ios::binary|std::ios::ate);if(!in)throw std::runtime_error("cannot read source: "+path_text(path));
@@ -78,9 +59,7 @@ std::string read_source(const std::filesystem::path& path) {
     std::string s(static_cast<std::size_t>(n),'\0');in.seekg(0);
     if(n&&!in.read(s.data(),n))throw std::runtime_error("cannot read complete source file");
     if(s.starts_with("\xef\xbb\xbf"))s.erase(0,3);
-#ifdef _WIN32
-    (void)win32::widen(s);
-#endif
+    platform::require_text(s);
     return s;
 }
 WorldDescriptor read_world(const std::filesystem::path& input) {
@@ -113,7 +92,7 @@ WorldDescriptor read_world(const std::filesystem::path& input) {
 void WorldHost::open(const std::filesystem::path& root,const std::function<void(const std::filesystem::path&)>& entry) {
     auto descriptor=read_world(root);auto previous=current_;auto cwd=std::filesystem::current_path();auto env=environment();
     try {
-        std::filesystem::current_path(descriptor.root);environment(descriptor.root.wstring());current_=descriptor;entry(descriptor.entry);
+        std::filesystem::current_path(descriptor.root);environment(path_text(descriptor.root));current_=descriptor;entry(descriptor.entry);
     }catch(...) {
         auto original=std::current_exception();current_=std::move(previous);
         try{std::filesystem::current_path(cwd);environment(env);}catch(const std::exception& error){throw std::runtime_error(std::string("world launch failed and rollback failed: ")+error.what());}

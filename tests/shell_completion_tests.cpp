@@ -1,5 +1,5 @@
 #include "hirari/shell.hpp"
-#include "hirari/win32.hpp"
+#include "test_support.hpp"
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -12,17 +12,20 @@ struct Host:hirari::Host {std::string out,errorText;void write(std::string_view 
 std::string quote(std::string_view s){std::string out="\"";for(char c:s){if(c=='\\'||c=='"')out+='\\';out+=c;}return out+'"';}
 void write(const std::filesystem::path& path,std::string_view source){std::ofstream out(path,std::ios::binary);if(path.extension()==".seed"&&!source.starts_with("#!"))out<<"#!/usr/bin/env hirari\n";out<<source;require(static_cast<bool>(out),"fixture write");}
 }
-int wmain(int argc,wchar_t** argv) {
+int run_tests(const std::vector<std::string>& argv) {
     auto before=std::filesystem::current_path();
     // Scripts report their canonical directory, so the root is canonical even when TEMP is an 8.3 path.
-    auto root=std::filesystem::canonical(std::filesystem::temp_directory_path())/(L"Hirari completion 日本 "+std::to_wstring(GetCurrentProcessId()));
+    auto root=std::filesystem::canonical(std::filesystem::temp_directory_path())/hirari::text_path("Hirari completion 日本 "+std::to_string(hirari::platform::process_id()));
     try {
-        require(argc==2,"native helper path required");auto helper=std::filesystem::path(argv[1]);
+        require(argv.size()==2,"native helper path required");auto helper=hirari::text_path(argv[1]);
         std::filesystem::create_directories(root);std::filesystem::current_path(root);
-        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"user vocabulary").c_str());
-        SetEnvironmentVariableW(L"HIRARI_PATH",root.c_str());
-        SetEnvironmentVariableW(L"HIRARI_STREAM_ACK",(root/L"first output received").c_str());
-        auto system=std::wstring(_wgetenv(L"SystemRoot"));auto path=helper.parent_path().wstring()+L";"+system+L"\\System32";SetEnvironmentVariableW(L"PATH",path.c_str());
+        auto set=[](const char* name,const std::filesystem::path& value){hirari::platform::set_environment(name,hirari::path_text(value));};
+        set("HIRARI_STATE",root/L"user vocabulary");
+        set("HIRARI_PATH",root);
+        set("HIRARI_STREAM_ACK",root/L"first output received");
+        hirari::platform::set_environment("PATH",hirari::test::search_path({helper.parent_path()}));
+        const std::string native=hirari::test::native_command();
+        std::string upper=native;std::transform(upper.begin(),upper.end(),upper.begin(),[](unsigned char c){return static_cast<char>(std::toupper(c));});
         Host host;hirari::Shell shell(host);auto& r=shell.seed();
         auto run=[&](const std::string& s){auto p=shell.execute(s);if(!p)throw std::runtime_error(s+"\n"+host.errorText);return p;};
         auto process=[&](const std::string& s){hirari::ProcessResult result;require(hirari::ProcessHost::unpack(r,run(s),result),"expected process result");return result;};
@@ -37,18 +40,18 @@ int wmain(int argc,wchar_t** argv) {
         require(process("say \"z\" \"a\" | hirari_test_program sort").out=="a\nz\n","alias pipeline expansion");
         require(process("apply --(hirari_test_program emit \"prefix\") --(\"appended\" --semantic)").out=="prefix\nappended\n--semantic\n","apply lost structural argument forwarding");
         write(root/L"named.seed","# Returns its argument without flattening identity\narg 0\n");
-        write(root/L"where.seed","# Editable vocabulary wins over Windows where.exe\narg 0\n");
-        require(r.is_name(run("WHERE --semantic")), "PATH executable shadowed Seed vocabulary");
-        require(r.is_name(run("--semantic | WHERE")), "pipe planning bypassed Seed vocabulary");
-        require(process("where \"where.exe\"").status==0,
+        write(root/(native+".seed"),"# Editable vocabulary wins over the system's program of this name\narg 0\n");
+        require(r.is_name(run(upper+" --semantic")), "PATH executable shadowed Seed vocabulary");
+        require(r.is_name(run("--semantic | "+upper)), "pipe planning bypassed Seed vocabulary");
+        require(process(native+" \""+native+"\"").status==0,
                 "lowercase command did not retain native lookup");
-        require(r.as_literal(run("help --WHERE"))->bytes.find("Seed program:")!=std::string::npos &&
-                r.as_literal(run("help --where"))->bytes.find("native executable:")!=std::string::npos,
+        require(r.as_literal(run("help --"+upper))->bytes.find("Seed program:")!=std::string::npos &&
+                r.as_literal(run("help --"+native))->bytes.find("native executable:")!=std::string::npos,
                 "help ignored command capitalization");
-        require(process("exec \"where.exe\" \"where.exe\"").status==0,
+        require(process("exec \""+native+"\" \""+native+"\"").status==0,
                 "explicit native execution stopped working after a vocabulary collision");
-        write(root/L"last.seed","first := 1\n3");
-        require(r.is_number(run("last")) && r.print(run("last"))=="3", "EOF lost final literal or required a terminator");
+        write(root/L"final-literal.seed","first := 1\n3");
+        require(r.is_number(run("final-literal")) && r.print(run("final-literal"))=="3", "EOF lost final literal or required a terminator");
         write(root/L"empty.seed","");require(r.is_unit(run("empty")), "empty source did not yield Unit");
         write(root/L"continued.seed","layoutValue := same \\\r\n\t--semantic\r\nlayoutValue\r\n");
         require(r.is_name(run("continued")), "script continuation lost Name identity or form order");
@@ -204,7 +207,7 @@ int wmain(int argc,wchar_t** argv) {
         run("data bind --opaque (data list 4)");run("vocab save --opaque");
         require(!shell.execute("hirari_test_program emit opaque"),"structured provider identity flattened into native argv");
         require(!shell.execute("hirari_test_program relay opaque?"),"structured provider query answer flattened into native stdin");
-        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"interactive vocabulary").c_str());
+        set("HIRARI_STATE",root/L"interactive vocabulary");
         {
             Host interactiveHost;hirari::Shell interactiveShell(interactiveHost);
             std::istringstream input("broken := hirari_test_program fail\nmissing := unavailable_program \"arg\"\nvocab restore --broken 1\nvocab use "+quote(hirari::path_text(root/L"interactive vocabulary"))+"\nquit\n");
@@ -218,7 +221,7 @@ int wmain(int argc,wchar_t** argv) {
             require(restored.seed().as_literal(help)->bytes.find("broken :=")!=std::string::npos,"failed initial command prevented definition persistence");
             require(restored.seed().as_literal(restored.execute("? missing"))->bytes.find("missing :=")!=std::string::npos,"initial evaluator error prevented definition persistence");
         }
-        SetEnvironmentVariableW(L"HIRARI_STATE",(root/L"user vocabulary").c_str());
+        set("HIRARI_STATE",root/L"user vocabulary");
         // Script stages compose by Seed application in this shell: the script's
         // answer becomes the native consumer's stdin. They are not { } stages.
         write(root/L"producer.seed","hirari_test_program emit \"first\" \"last\"\n");
@@ -234,7 +237,9 @@ int wmain(int argc,wchar_t** argv) {
         // A failed script answer is an evaluation error, never an empty stdin.
         require(!shell.execute("failure? | hirari_test_program relay"),"application hid a failed script answer");
         // Native argv keeps its words, and a program that parses its own command line can read it.
+        #ifdef _WIN32
         require(process("exec \"cmd.exe\" \"/c\" \"echo hi there\"").out=="hi there\r\n","cmd /c could not read its quoted command");
+#endif
         require(process("hirari_test_program emit \"it's\" \"a b\" \"\" \"plain\" \"tail\\\\\"").out=="it's\na b\n\nplain\ntail\\\n","argv words changed through quoting");
         // Text prints as itself; values print as they read.
         host.out.clear();run("data print \"raw\" 3");require(host.out=="raw 3\n","data print quoted text");
@@ -288,6 +293,16 @@ int wmain(int argc,wchar_t** argv) {
         require(r.as_literal(run("data get listed \"name\""))->bytes=="f.txt" && r.as_literal(run("data get listed \"kind\""))->bytes=="file" && r.print(run("data get listed \"size\""))=="7","list record wrong");
         require(r.as_literal(run("data get (data at (provide --files \"list\" \"tree\") 0) \"kind\""))->bytes=="directory","list did not name a directory");
         require(!shell.execute("provide --files \"list\" \"no such place\"") && host.errorText.find("no such place")!=std::string::npos,"a missing path was not named");host.errorText.clear();
+#ifndef _WIN32
+        // A link is listed as itself, and a file name that isn't text is marked rather than fatal.
+        std::filesystem::create_symlink("tree",root/L"tree-link");
+        {std::ofstream(root/"tree"/"a"/"b"/"bad\xff.txt")<<"x";}
+        const auto top=r.as_literal(run("data json (provide --files \"list\" \".\")"))->bytes;
+        require(top.find("\"kind\":\"symlink\"")!=std::string::npos&&top.find("\"mode\":\"0")!=std::string::npos,"list did not report a link as itself, or a mode");
+        const auto named=r.as_literal(run("data json (provide --files \"list\" \"tree/a/b\")"))->bytes;
+        require(named.find("\"lossy\":true")!=std::string::npos&&named.find("bad\xef\xbf\xbd.txt")!=std::string::npos,"a name that isn't text was not marked");
+        std::filesystem::remove(root/"tree"/"a"/"b"/"bad\xff.txt");std::filesystem::remove(root/L"tree-link");
+#endif
         run("provide --files \"cp\" \"tree/a/b/f.txt\" \"copied.txt\"");require(std::filesystem::file_size(root/L"copied.txt")==7,"cp did not copy a file");
         run("provide --files \"cp\" \"copied.txt\" \"tree/c\"");require(std::filesystem::exists(root/L"tree"/L"c"/L"copied.txt"),"cp did not copy into a directory");
         run("provide --files \"mv\" \"copied.txt\" \"moved.txt\"");require(!std::filesystem::exists(root/L"copied.txt") && std::filesystem::exists(root/L"moved.txt"),"mv did not rename");
@@ -305,3 +320,4 @@ int wmain(int argc,wchar_t** argv) {
         std::filesystem::current_path(before);std::filesystem::remove_all(root);std::cout<<"SHELL_COMPLETION_OK\n";return 0;
     }catch(const std::exception& error){std::filesystem::current_path(before);std::cerr<<error.what()<<"\nEvidence: "<<hirari::path_text(root)<<'\n';return 1;}
 }
+HIRARI_TEST_MAIN(run_tests)

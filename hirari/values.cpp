@@ -2,7 +2,7 @@
 #include "hirari/value_wire.hpp"
 #include <charconv>
 #include <fstream>
-#include "hirari/win32.hpp"
+#include "hirari/platform.hpp"
 #include "hirari/world.hpp"
 #include <stdexcept>
 #include <algorithm>
@@ -311,31 +311,20 @@ seed::Ptr Values::data(seed::Runtime& r,seed::Node* relation,seed::Ptr context) 
         // program it starts. A world entry receives its session context here.
         auto name=text(r,terms[2]);
         if(name.empty()||name.find('=')!=std::string::npos||name.find('\0')!=std::string::npos)throw std::runtime_error("invalid environment variable name");
-#ifdef _WIN32
-        auto key=win32::widen(name);
         if(terms.size()==4) {
-            auto value=r.reduce(terms[3]);std::wstring wide;
+            auto value=r.reduce(terms[3]);std::optional<std::string> assigned;
             if(!r.is_unit(value)) {
                 std::string spelling=r.is_literal(value)?r.as_literal(value)->bytes:r.is_number(value)?r.as_number(value)->spelling:
                     throw std::runtime_error("data env NAME VALUE requires text, a number, or () to unset");
                 if(spelling.empty())throw std::runtime_error("use () to unset an environment variable");
-                wide=win32::widen(spelling);
+                assigned=std::move(spelling);
             }
-            // _wputenv_s keeps the C runtime and the Win32 environment block in step.
-            if(_wputenv_s(key.c_str(),wide.c_str())!=0)throw std::runtime_error("cannot set environment variable: "+name);
+            platform::set_environment(name,assigned);
             return r.arena().unit();
         }
-        SetLastError(ERROR_SUCCESS);DWORD size=GetEnvironmentVariableW(key.c_str(),nullptr,0);
-        if(!size) {
-            if(GetLastError()==ERROR_ENVVAR_NOT_FOUND)return r.arena().unit();
-            return r.arena().make_literal("");
-        }
-        std::wstring buffer(size,L'\0');DWORD count=GetEnvironmentVariableW(key.c_str(),buffer.data(),size);
-        if(count>=size)throw std::runtime_error("environment variable changed while reading: "+name);
-        buffer.resize(count);return r.arena().make_literal(win32::narrow(buffer));
-#else
-        throw std::runtime_error("data env requires Windows");
-#endif
+        auto current=platform::environment(name);
+        if(!current)return r.arena().unit();
+        return r.arena().make_literal(*current);
     }
     if(operation=="file" && terms.size()==3) {
         auto path=text(r,terms[2]);

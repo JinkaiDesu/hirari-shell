@@ -4,10 +4,6 @@
 #include <cctype>
 #include <fstream>
 #include <system_error>
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#endif
 
 namespace hirari {
 namespace {
@@ -116,14 +112,7 @@ void LineEditor::remember(const std::string& line) {
     std::ofstream(history_file_, std::ios::binary | std::ios::app) << line << '\n';
 }
 
-int LineEditor::columns() const {
-#ifdef _WIN32
-    CONSOLE_SCREEN_BUFFER_INFO info{};
-    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
-        return std::max(1, info.srWindow.Right - info.srWindow.Left + 1);
-#endif
-    return 80;
-}
+int LineEditor::columns() const { return console::size().columns; }
 
 void LineEditor::render() {
     const int width = columns();
@@ -228,7 +217,7 @@ void LineEditor::search_step(std::size_t from) {
 
 // Reverse search owns the keys it understands; any other key ends the search and
 // is then handled as ordinary editing, on the line that was found.
-bool LineEditor::handle_search(const Key& key, bool& accepted) {
+bool LineEditor::handle_search(const console::Key& key, bool& accepted) {
     const char32_t c = key.character;
     if (c == 18) { if (!query_.empty()) search_step(search_index_); return true; }
     if (c == 8) {
@@ -253,52 +242,8 @@ bool LineEditor::handle_search(const Key& key, bool& accepted) {
     return accepted;
 }
 
-bool LineEditor::next_key(Key& key, bool& interrupted) {
-#ifdef _WIN32
-    HANDLE console = GetStdHandle(STD_INPUT_HANDLE);
-    wchar_t high = 0;
-    for (;;) {
-        if (host_.interrupted()) { interrupted = true; return true; }
-        DWORD ready = WaitForSingleObject(console, 30);
-        if (ready == WAIT_TIMEOUT) continue;
-        if (ready != WAIT_OBJECT_0) return false;
-        INPUT_RECORD event{};
-        DWORD count = 0;
-        if (!ReadConsoleInputW(console, &event, 1, &count)) return false;
-        if (event.EventType == WINDOW_BUFFER_SIZE_EVENT) { render(); continue; }
-        if (event.EventType != KEY_EVENT || !event.Event.KeyEvent.bKeyDown) continue;
-        const auto& record = event.Event.KeyEvent;
-        wchar_t c = record.uChar.UnicodeChar;
-        if (c >= 0xd800 && c <= 0xdbff) { high = c; continue; }
-        key.character = high && c >= 0xdc00 && c <= 0xdfff
-            ? 0x10000 + ((static_cast<char32_t>(high) - 0xd800) << 10) + (static_cast<char32_t>(c) - 0xdc00)
-            : static_cast<char32_t>(c);
-        high = 0;
-        key.virtual_key = record.wVirtualKeyCode;
-        key.control = (record.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-        key.alt = (record.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
-        DWORD queued = 0;
-        key.pending = GetNumberOfConsoleInputEvents(console, &queued) && queued > 1;
-        // Modifiers arrive as keys of their own, and they aren't input.
-        const auto vk = key.virtual_key;
-        if (!key.character && (!vk || vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_CAPITAL ||
-                               vk == VK_NUMLOCK || vk == VK_SCROLL || vk == VK_LWIN || vk == VK_RWIN)) continue;
-        return true;
-    }
-#else
-    (void)key; (void)interrupted;
-    return false;
-#endif
-}
-
 LineEditor::Outcome LineEditor::read(const std::string& prompt, std::string& line) {
-#ifdef _WIN32
-    HANDLE console = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD saved = 0;
-    GetConsoleMode(console, &saved);
-    SetConsoleMode(console, ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
-    struct ModeGuard { HANDLE console; DWORD mode; ~ModeGuard() { SetConsoleMode(console, mode); } } guard{console, saved};
-#endif
+    console::KeyboardMode mode;
     prompt_ = prompt;
     text_.clear();
     draft_.clear();
@@ -314,9 +259,9 @@ LineEditor::Outcome LineEditor::read(const std::string& prompt, std::string& lin
         host_.write(ending);
     };
     for (;;) {
-        Key key;
+        console::Key key;
         bool interrupted = false;
-        if (!next_key(key, interrupted)) { finish("\n"); return Outcome::End; }
+        if (!console::next_key(key, interrupted, host_, [this] { render(); })) { finish("\n"); return Outcome::End; }
         const char32_t c = key.character;
         if (interrupted || c == 3) { finish("^C\n"); return Outcome::Cancelled; }
         if (searching_) {
@@ -324,28 +269,28 @@ LineEditor::Outcome LineEditor::read(const std::string& prompt, std::string& lin
             if (handle_search(key, accepted) && !accepted) { render(); continue; }
             if (accepted) { finish("\n"); line = encode(text_); return Outcome::Line; }
         }
-#ifdef _WIN32
-        const unsigned vk = key.virtual_key;
+        using Special = console::Key::Special;
+        const auto special = key.special;
         if (c == U'\r' || c == U'\n') { finish("\n"); line = encode(text_); return Outcome::Line; }
-        if ((c == 4 || c == 26) && text_.empty()) { finish("\n"); return Outcome::End; }
-        if (vk == VK_TAB || c == U'\t') {
+        if (console::ends_input(c) && text_.empty()) { finish("\n"); return Outcome::End; }
+        if (special == Special::Tab || c == U'\t') {
             // Tabs arriving inside a burst of keys are pasted text, not requests.
             if (key.pending) { text_.insert(cursor_++, 1, U' '); }
             else complete();
         }
-        else if (vk == VK_LEFT) cursor_ = key.control ? word_left() : cursor_ - (cursor_ > 0);
-        else if (vk == VK_RIGHT) cursor_ = key.control ? word_right() : cursor_ + (cursor_ < text_.size());
-        else if (vk == VK_HOME || c == 1) cursor_ = 0;
-        else if (vk == VK_END || c == 5) cursor_ = text_.size();
-        else if (vk == VK_UP || c == 16) { if (history_index_ > 0) recall(history_index_ - 1); }
-        else if (vk == VK_DOWN || c == 14) { if (history_index_ < history_.size()) recall(history_index_ + 1); }
-        else if (vk == VK_DELETE || c == 4) { if (cursor_ < text_.size()) text_.erase(cursor_, 1); }
+        else if (special == Special::Left) cursor_ = key.control ? word_left() : cursor_ - (cursor_ > 0);
+        else if (special == Special::Right) cursor_ = key.control ? word_right() : cursor_ + (cursor_ < text_.size());
+        else if (special == Special::Home || c == 1) cursor_ = 0;
+        else if (special == Special::End || c == 5) cursor_ = text_.size();
+        else if (special == Special::Up || c == 16) { if (history_index_ > 0) recall(history_index_ - 1); }
+        else if (special == Special::Down || c == 14) { if (history_index_ < history_.size()) recall(history_index_ + 1); }
+        else if (special == Special::Delete || c == 4) { if (cursor_ < text_.size()) text_.erase(cursor_, 1); }
         else if (c == 2) cursor_ -= cursor_ > 0;
         else if (c == 6) cursor_ += cursor_ < text_.size();
         else if (c == 11) kill(cursor_, text_.size());
         else if (c == 21) kill(0, cursor_);
-        else if (c == 23 || c == 127 || (vk == VK_BACK && (key.control || key.alt))) kill(word_left(), cursor_);
-        else if (vk == VK_BACK || c == 8) { if (cursor_ > 0) text_.erase(--cursor_, 1); }
+        else if (c == 23 || c == 127 || (special == Special::Backspace && (key.control || key.alt))) kill(word_left(), cursor_);
+        else if (special == Special::Backspace || c == 8) { if (cursor_ > 0) text_.erase(--cursor_, 1); }
         else if (c == 25) { text_.insert(cursor_, killed_); cursor_ += killed_.size(); }
         else if (c == 12) { host_.write("\x1b[2J\x1b[3J\x1b[H"); rows_above_ = 0; }
         else if (c == 27) { text_.clear(); cursor_ = 0; history_index_ = history_.size(); }
@@ -359,10 +304,6 @@ LineEditor::Outcome LineEditor::read(const std::string& prompt, std::string& lin
         else if (c >= 32) text_.insert(cursor_++, 1, c);
         else continue;
         render();
-#else
-        (void)c;
-        return Outcome::End;
-#endif
     }
 }
 
