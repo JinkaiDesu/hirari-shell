@@ -28,6 +28,7 @@ writes a release folder. An installed shell needs no development toolchain.
 - At the prompt, Tab completes names and paths, Up and Ctrl+R search the saved history, and the arrows, Home, End and Ctrl+A/E/K/U/W/Y edit the line.
 - `echo`, `cat`, `ls`, `mkdir`, `rm`, `cp` and `mv` are built in, unless `PATH` has a program of that name.
 - `help --seed` teaches the language on one page.
+- `hirari --update` installs the latest release over this installation, and `hirari --update --check` only reports it (status 10 when an update is available).
 
 ## Seed at a glance
 

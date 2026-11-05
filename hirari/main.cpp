@@ -1,5 +1,6 @@
 #include "hirari/shell.hpp"
 #include "hirari/installation.hpp"
+#include "hirari/update.hpp"
 #include <iostream>
 #include <atomic>
 #include <vector>
@@ -79,18 +80,20 @@ int main(int argc, char** argv) {
 #endif
         }
         if (args.empty()) return shell.run();
+        if (args[0] == "--update") return hirari::run_update({args.begin() + 1, args.end()}, HIRARI_VERSION, host);
         if (args.size() == 1 && args[0] == "--version") {
             host.write(std::string("hirari ") + HIRARI_VERSION + "\n");
             return 0;
         }
         constexpr std::string_view usage =
-            "usage: hirari [FILE.seed [ARGUMENTS ...] | --file FILE [ARGUMENTS ...] | --eval SOURCE | --version | --help]\n";
-        if (args.size() == 1 && (args[0] == "--help" || args[0] == "--h")) {
+            "usage: hirari [FILE.seed [ARGUMENTS ...] | --file FILE [ARGUMENTS ...] | --eval SOURCE | --update [--check] | --version | --help]\n";
+        if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h")) {
             host.write(usage);
             host.write("With no arguments, starts the interactive shell. A file is UTF-8 Seed: each statement runs in\n"
                        "turn and the first failure stops it with FILE:LINE and a nonzero status.\n\n"
                        "HIRARI_PATH   more folders to find .seed commands in\n"
                        "HIRARI_STATE  the folder for saved definitions and history; - keeps none\n\n"
+                       "--update installs the latest release over this installation; --check only reports, with status 10 when one is available.\n\n"
                        "Inside the shell, `help` lists what's there and `help --seed` teaches the language.\n");
             return 0;
         }

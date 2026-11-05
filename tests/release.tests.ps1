@@ -27,6 +27,7 @@ try {
     try {
         Check ((@(& $hirari --version)[0]) -match "^hirari $([regex]::Escape($core))\b") "reports version $core"
         Check (("$(@(& $hirari --eval '(1 + 2)')[-1])").Trim() -eq '3') 'evaluates Seed'
+        Check ((& $hirari --help) -join "`n" -match '--update') 'offers self-update'
         Check (((& $hirari --eval 'help --regex') -join "`n") -match '(?i)regex') 'finds its packaged Seed library'
         Check (((& $hirari --eval 'hostname') -join "`n") -match [regex]::Escape($env:COMPUTERNAME)) 'runs an ordinary program from PATH'
         Check (((& $hirari --eval 'help --seed') -join "`n") -match 'Functions') 'teaches the language'
