@@ -2,27 +2,14 @@
 #include "hirari/value_wire.hpp"
 #include "hirari/world.hpp"
 #include "hirari/win32.hpp"
+#include "hirari/sha256.hpp"
 #include <fstream>
 #include <chrono>
-#ifdef _WIN32
-#include <bcrypt.h>
-#endif
 namespace hirari {
 namespace {
 using Clock=std::chrono::steady_clock;
 std::string identity(const Json& value){auto kind=value.at("kind").get<std::string>();if(kind=="name")return identity(value.at("value"));if(kind=="symbol"||kind=="literal")return value.at("value").get<std::string>();throw std::runtime_error("job operation requires an identity");}
-std::string digest(std::string_view text) {
-#ifdef _WIN32
-    BCRYPT_ALG_HANDLE algorithm=nullptr;BCRYPT_HASH_HANDLE hash=nullptr;
-    if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)throw std::runtime_error("SHA-256 unavailable");
-    struct Cleanup{BCRYPT_ALG_HANDLE& a;BCRYPT_HASH_HANDLE& h;~Cleanup(){if(h)BCryptDestroyHash(h);if(a)BCryptCloseAlgorithmProvider(a,0);}} cleanup{algorithm,hash};
-    unsigned char result[32];
-    if(text.size()>ULONG_MAX||BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)<0||BCryptHashData(hash,reinterpret_cast<PUCHAR>(const_cast<char*>(text.data())),static_cast<ULONG>(text.size()),0)<0||BCryptFinishHash(hash,result,32,0)<0)throw std::runtime_error("SHA-256 failed");
-    std::string output;for(auto b:result){output+="0123456789abcdef"[b>>4];output+="0123456789abcdef"[b&15];}return output;
-#else
-    (void)text;throw std::runtime_error("jobs require Windows");
-#endif
-}
+std::string digest(std::string_view text) { return sha256(text); }
 }
 Jobs::Jobs(Values& values,Host& host):host_(host) {
     values.link("jobs","General background jobs: start EXECUTABLE ARGUMENT_LIST [OPTIONS], status ID, wait ID [TIMEOUT_MS], cancel ID, forget ID, list. Options: parameters, timeout_ms, directory, slot, revision, cache_directory, cache_key, structured. A job runs until it exits or is cancelled; only an explicit timeout_ms terminates it. wait returns the job state with wait=\"completed\" or wait=\"timeout\" and never stops the job. State carries pid, live stdout/stderr, exit_status and elapsed_ms. Workers receive hirari.jobs/1 JSON on stdin; matching progress/result/error records on stdout are observed. Shell-owned jobs stop on shell exit.",[this](const auto& args){return invoke(args);});

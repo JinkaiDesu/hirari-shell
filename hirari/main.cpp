@@ -1,5 +1,6 @@
 #include "hirari/shell.hpp"
 #include "hirari/installation.hpp"
+#include "hirari/update.hpp"
 #include <iostream>
 #include <atomic>
 #include <vector>
@@ -79,13 +80,15 @@ int main(int argc, char** argv) {
 #endif
         }
         if (args.empty()) return shell.run();
+        if (args[0] == "--update") return hirari::run_update({args.begin() + 1, args.end()}, HIRARI_VERSION, host);
         if (args.size() == 1 && args[0] == "--version") {
             host.write(std::string("hirari ") + HIRARI_VERSION + "\n");
             return 0;
         }
         if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h")) {
-            host.write("Usage: hirari [--eval SOURCE | --file PATH [arguments]]\n"
-                       "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions; open groups and leading-pipe lines continue the current expression.\n");
+            host.write("Usage: hirari [--eval SOURCE | --file PATH [arguments] | --update [--check] | --version]\n"
+                       "No arguments starts the interactive shell. Scripts are UTF-8 Seed expressions; open groups and leading-pipe lines continue the current expression.\n"
+                       "--update installs the latest release over this installation. --check only reports: status 10 when an update is available.\n");
             return 0;
         }
         if (args.size() < 2 || (args[0] != "--eval" && args[0] != "--file" && args[0] != "--stream-file") || (args[0] == "--eval" && args.size() != 2)) {

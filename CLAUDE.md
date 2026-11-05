@@ -120,6 +120,23 @@ hirari publishes these and consumes none. A change to one bumps its version. Who
 | Release archive | `hirari-<version>-windows-x64.zip` | The `cmake --install` release folder, deterministic, with `release.receipt.json` (`schemaVersion` 1: `name`, `version`, and each file's `path`, `size` and `sha256`). |
 | Download manifest | `emergence.manifest/1` | `hirari/<version>/manifest.json` in the public downloads bucket for each version, and `hirari/manifest.json`, the latest pointer: a byte-identical copy of the newest version's manifest. |
 
+## Self-update
+
+`hirari --update` (`hirari/update.cpp`) runs only when asked; nothing checks in the background. Its last line and status are for scripts:
+
+| Line | Status | Meaning |
+|---|---|---|
+| `UP-TO-DATE <version>` | 0 | Nothing newer is published. |
+| `UPDATE-AVAILABLE <current> <latest>` | 10 | Only from `--check`, which changes nothing. |
+| `UPDATED <old> <new>` | 0 | The installation was replaced. |
+| `error: update: <why>` | 1 | The installation is as it was. |
+
+- **It installs only a release that proves itself:** a higher version from the manifest for its platform, on the downloads host, whose archive matches the manifest's size and SHA-256 and whose files match their receipt exactly. The new shell must report that version and evaluate Seed before anything is replaced. A failed swap is rolled back. HTTPS and these hashes are the only trust: nothing is signed (Authorization).
+- **It refuses** a folder with no receipt (a build), and a folder named after its own version: whatever pinned that version there updates it.
+- **It replaces only what the receipts name,** so files no release owns stay, and a release that would overwrite one is refused. A replaced executable that is still running can't be deleted on Windows, so it stays in a `.hirari-update-*` folder until the next update removes it. A power cut mid-swap leaves no receipt: the old files are in that folder, and the update refuses until it is sorted out by hand.
+- **`HIRARI_UPDATE_MANIFEST`** names another manifest, and lifts the host check. Tests use it with `file:` URLs.
+- **A new platform** supplies the Platform section of `update.cpp` and nothing else in that file changes.
+
 ## Versioning
 
 hirari has its own semver, `project(Hirari VERSION …)` in `CMakeLists.txt`. It answers to nothing outside this repository, and other projects' versions never constrain it.
