@@ -31,13 +31,13 @@ try {
         Check (((& $hirari --eval 'help --regex') -join "`n") -match '(?i)regex') 'finds its packaged Seed library'
         Check (((& $hirari --eval 'hostname') -join "`n") -match [regex]::Escape($env:COMPUTERNAME)) 'runs an ordinary program from PATH'
         Check (((& $hirari --eval 'help --seed') -join "`n") -match 'Functions') 'teaches the language'
-        Check ((@(& $hirari --eval 'echo "hello" 3')[-1]) -ceq 'hello 3') 'prints text as itself'
+        Check ((@(& $hirari --eval 'ECHO "hello" 3')[-1]) -ceq 'hello 3') 'prints text as itself'
         $script = Join-Path $root 'script.seed'
         Set-Content -LiteralPath $script -Value 'data print "got" (arg 0)' -NoNewline
         Check ((@(& $hirari $script 'it')[-1]) -ceq 'got it') 'runs a file named on the command line'
         $files = Join-Path ([IO.Path]::GetTempPath()) "hirari-release-files-$PID"
         $fileScript = Join-Path ([IO.Path]::GetTempPath()) "hirari-release-files-$PID.seed"
-        Set-Content -LiteralPath $fileScript -NoNewline -Value "cd (arg 0)`nmkdir `"a/b`"`n{ `"text`" > `"a/f.txt`" }`ncp `"a/f.txt`" `"a/g.txt`"`nmv `"a/g.txt`" `"a/h.txt`"`nrm `"a/f.txt`"`nls `"a`"`ncat `"a/h.txt`"`nrm --r `"a`"`nls"
+        Set-Content -LiteralPath $fileScript -NoNewline -Value "cd (arg 0)`nMKDIR `"a/b`"`n{ `"text`" > `"a/f.txt`" }`nCP `"a/f.txt`" `"a/g.txt`"`nMV `"a/g.txt`" `"a/h.txt`"`nRM `"a/f.txt`"`nLS `"a`"`nCAT `"a/h.txt`"`nRM --r `"a`"`nLS"
         New-Item -ItemType Directory -Path $files | Out-Null
         try { Check ((@(& $hirari $fileScript $files) -join ',') -ceq 'b/,h.txt,text') 'the file commands work together' }
         finally { Remove-Item -LiteralPath $files, $fileScript -Recurse -Force -ErrorAction SilentlyContinue }
