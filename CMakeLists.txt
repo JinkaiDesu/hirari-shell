@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Hirari VERSION 0.6.2 LANGUAGES C CXX)
+project(Hirari VERSION 0.6.3 LANGUAGES C CXX)
 
 include(cmake/RegexLibrary.cmake)
 
@@ -55,6 +55,7 @@ target_link_libraries(hirari_runtime
 add_executable(hirari
     hirari/main.cpp
     hirari/installation.cpp
+    hirari/update.cpp
 )
 
 target_link_libraries(hirari
@@ -111,7 +112,6 @@ else()
     )
 endif()
 if(WIN32)
-    target_link_libraries(hirari_runtime PUBLIC bcrypt)
     enable_language(RC)
     find_program(HIRARI_POWERSHELL NAMES pwsh powershell REQUIRED)
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hirari.ico"
@@ -159,6 +159,9 @@ if(BUILD_TESTING)
         target_compile_options(seed_performance_profile PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME seed_semantics COMMAND seed_tests)
+    add_executable(hirari_sha256_tests tests/sha256_tests.cpp)
+    target_include_directories(hirari_sha256_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME hirari_sha256 COMMAND hirari_sha256_tests)
     if(WIN32)
         add_library(hirari_test_capability SHARED tests/native_capability.cpp)
         target_include_directories(hirari_test_capability PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -194,6 +197,15 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME hirari_shell_supervision COMMAND hirari_shell_supervision_tests $<TARGET_FILE:hirari_test_program> $<TARGET_FILE:hirari>)
         set_tests_properties(hirari_shell_supervision PROPERTIES TIMEOUT 120)
+        # The same shell reporting a newer version: what --update installs in its tests.
+        add_executable(hirari_update_fixture hirari/main.cpp hirari/installation.cpp hirari/update.cpp)
+        target_link_libraries(hirari_update_fixture PRIVATE hirari_runtime)
+        target_compile_definitions(hirari_update_fixture PRIVATE HIRARI_VERSION="99.0.0")
+        if(MSVC)
+            target_compile_options(hirari_update_fixture PRIVATE /W4 /permissive- /utf-8)
+        endif()
+        add_test(NAME hirari_update COMMAND "${HIRARI_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/update.tests.ps1" -Current $<TARGET_FILE:hirari> -Fixture $<TARGET_FILE:hirari_update_fixture>)
+        set_tests_properties(hirari_update PROPERTIES TIMEOUT 180)
     endif()
     add_test(NAME hirari_eval_name COMMAND hirari --eval "-foo")
     set_tests_properties(hirari_eval_name PROPERTIES PASS_REGULAR_EXPRESSION "-foo")
@@ -225,8 +237,8 @@ if(BUILD_TESTING)
         add_library(hirari_deferred_runtime STATIC ${hirari_runtime_sources})
         target_include_directories(hirari_deferred_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         target_compile_definitions(hirari_deferred_runtime PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX)
-        target_link_libraries(hirari_deferred_runtime PUBLIC seed_deferred pcre2-8-static bcrypt)
-        add_executable(hirari_deferred hirari/main.cpp hirari/installation.cpp)
+        target_link_libraries(hirari_deferred_runtime PUBLIC seed_deferred pcre2-8-static)
+        add_executable(hirari_deferred hirari/main.cpp hirari/installation.cpp hirari/update.cpp)
         target_link_libraries(hirari_deferred PRIVATE hirari_deferred_runtime)
         target_compile_definitions(hirari_deferred PRIVATE HIRARI_VERSION="${PROJECT_VERSION}")
         add_executable(seed_deferred_tests tests/deferred_substitution_tests.cpp)

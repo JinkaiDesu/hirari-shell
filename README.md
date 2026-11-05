@@ -25,6 +25,7 @@ writes a release folder. An installed shell needs no development toolchain.
 - `hirari` starts the interactive shell; `exit` or `quit` ends it.
 - `hirari --eval SOURCE` evaluates one expression, and `hirari --file PATH` runs a UTF-8 script.
 - Source errors report the file and line, stop execution and return nonzero.
+- `hirari --update` installs the latest release over this installation, and `hirari --update --check` only reports it (status 10 when an update is available).
 
 ## Seed at a glance
 
