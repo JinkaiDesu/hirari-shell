@@ -1,0 +1,6 @@
+#!/usr/bin/env hirari
+"""
+Remove files. Directories need --r.
+rm [--r] "PATH" ...
+"""
+apply --(provide --files "rm") args?

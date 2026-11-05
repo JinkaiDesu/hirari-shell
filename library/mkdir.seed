@@ -1,0 +1,6 @@
+#!/usr/bin/env hirari
+"""
+Create directories and any missing parents.
+mkdir "DIRECTORY" ...
+"""
+apply --(provide --files "mkdir") args?

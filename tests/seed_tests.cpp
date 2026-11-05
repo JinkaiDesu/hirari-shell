@@ -88,36 +88,36 @@ void semantics() {
     Effects effects{"", rt.arena().make_name(&payload)};
     rt.define("source", &source, &effects);
     rt.define("consume", &consume, &effects);
-    for (auto spelling : {"consume (source -input)", "source -input | consume", "consume(source -input)"}) {
+    for (auto spelling : {"consume (source --input)", "source --input | consume", "consume(source --input)"}) {
         effects.trace.clear();
         require(rt.run(spelling) == effects.value && effects.trace == "PC", "application/flow effects differ");
     }
     effects.trace.clear();
-    require(rt.run("source -input | consume | consume") == effects.value && effects.trace == "PCC", "flow chain order changed");
+    require(rt.run("source --input | consume | consume") == effects.value && effects.trace == "PCC", "flow chain order changed");
     effects.trace.clear();
-    require(rt.print(rt.run("if -false (source -input | consume) \"idle\"")) == "\"idle\"" && effects.trace.empty(), "orientation eagerly executed an unchosen branch");
+    require(rt.print(rt.run("if --false (source --input | consume) \"idle\"")) == "\"idle\"" && effects.trace.empty(), "orientation eagerly executed an unchosen branch");
     require(rt.structural(rt.run("a b")) == rt.structural(rt.run("b | a")), "product mirror mismatch");
     require(rt.structural(rt.run("a b")) == rt.structural(rt.run("a(b)")), "call product mismatch");
     require(rt.structural(rt.run("a () b")) == rt.structural(rt.run("b : a")), "capture mirror mismatch");
-    require(rt.structural(rt.run("a : b")) != rt.structural(rt.run("a -b")), "detached colon became Name application");
+    require(rt.structural(rt.run("a : b")) != rt.structural(rt.run("a --b")), "detached colon became Name application");
     require(rt.structural(rt.run("a () b")) != rt.structural(rt.run("a b")), "Unit was discarded");
-    auto captured = rt.run("consume () (source -input)");
+    auto captured = rt.run("consume () (source --input)");
     require(rt.is_relation(captured), "capture became ordinary application");
 
-    auto cell = rt.run("@ -x");
+    auto cell = rt.run("@ --x");
     require(rt.run(rt.structural(cell)) == cell, "structural Cell printing changed binding identity");
     auto rawAlias = rt.arena().make_name(rt.intern("lt"));
     require(rt.as_name(rt.read(rt.print(rawAlias)))->target == rt.intern("lt"), "raw identity became an operator alias on print/read");
-    require(rt.as_name(rt.read("-lt"))->target == rt.intern("<"), "named operator alias lost its target");
+    require(rt.as_name(rt.read("--lt"))->target == rt.intern("<"), "named operator alias lost its target");
     rt.run("lt := 3");auto aliasCell = rt.run("@lt");
     require(rt.run(rt.structural(aliasCell)) == aliasCell, "binding Cell became an operator alias on print/read");
     effects.trace.clear();
-    require(rt.run("x := source -input") == effects.value && effects.trace == "P", "forward binding effects");
+    require(rt.run("x := source --input") == effects.value && effects.trace == "P", "forward binding effects");
     auto head = rt.binding(rt.intern("x"));
     require(rt.is_relation(head) && rt.run("@ x") == cell, "binding lost lazy form or stable cell");
     auto revision = rt.as_cell(cell)->revision;
     effects.trace.clear();
-    require(rt.run("source -input = x") == effects.value && effects.trace == "P", "reverse binding effects");
+    require(rt.run("source --input = x") == effects.value && effects.trace == "P", "reverse binding effects");
     require(rt.as_cell(cell)->revision == revision + 1 && rt.run("@ x") == cell, "inverse binding cell mismatch");
     require(rt.structural(head) == rt.structural(rt.binding(rt.intern("x"))), "inverse binding expression changed");
     effects.trace.clear();
@@ -133,12 +133,12 @@ void semantics() {
     rejects([&]{rt.run("source | ");}, "empty consumer accepted");
 
     rt.define("matches", &matches);
-    auto answer = rt.run("demand matches -nearby");
+    auto answer = rt.run("demand matches --nearby");
     require(rt.is_name(answer) && rt.terms(rt.as_node(rt.as_name(answer)->target)).size() == 2, "provider query lost matching identities");
-    require(rt.is_unit(rt.as_name(rt.run("demand matches -missing"))->target), "empty matches not represented");
-    require(rt.structural(rt.run("(matches -nearby)?")) == rt.structural(answer), "attached answer lost plural identities");
-    require(rt.is_unit(rt.as_name(rt.run("(matches -missing)?"))->target), "attached answer lost empty query result");
-    rt.bind(rt.intern("producer"), rt.read("source -input"));
+    require(rt.is_unit(rt.as_name(rt.run("demand matches --missing"))->target), "empty matches not represented");
+    require(rt.structural(rt.run("(matches --nearby)?")) == rt.structural(answer), "attached answer lost plural identities");
+    require(rt.is_unit(rt.as_name(rt.run("(matches --missing)?"))->target), "attached answer lost empty query result");
+    rt.bind(rt.intern("producer"), rt.read("source --input"));
     for (auto spelling : {"consume producer?", "producer? | consume", "consume(producer?)"}) {
         effects.trace.clear();
         require(rt.run(spelling) == effects.value && effects.trace == "PC", "attached producer duplicated effects or lost opaque identity");
@@ -146,12 +146,12 @@ void semantics() {
     require(rt.structural(rt.read("a b?")) == rt.structural(rt.run("b? | a")), "attached producer flow lowering mismatch");
     require(rt.structural(rt.read("b?")) != rt.structural(rt.read("b ?")), "attachment became detached help");
     effects.trace.clear();
-    require(rt.print(rt.run("if -false producer? \"idle\"")) == "\"idle\"" && effects.trace.empty(), "attached answer eagerly evaluated an unchosen branch");
-    rt.bind(rt.intern("predicate"), rt.read("-true"));
-    require(rt.print(rt.run("predicate?")) == "-true", "predicate answer changed value kind");
+    require(rt.print(rt.run("if --false producer? \"idle\"")) == "\"idle\"" && effects.trace.empty(), "attached answer eagerly evaluated an unchosen branch");
+    rt.bind(rt.intern("predicate"), rt.read("--true"));
+    require(rt.print(rt.run("predicate?")) == "--true", "predicate answer changed value kind");
     seed::Runtime unhosted;
     require(!unhosted.registry().find(unhosted.intern("?")) &&
-            unhosted.print(unhosted.run("? source -input")) == "? source -input",
+            unhosted.print(unhosted.run("? source --input")) == "? source --input",
             "standalone '?' still supplies demand semantics instead of leaving help to its host");
     require(rt.print(rt.run("unbound ?")) == "unbound ?", "postfix demand invented semantics");
 
@@ -232,27 +232,27 @@ void abstractions() {
     reduces("(a() (a a)) (a() a)", "a() a"); // Terminating self-application.
     reduces("(a() a) (a() a)", "a() a");
     reduces("(a() (b() a b)) b", "b() (b b)"); // Incoming b is captured.
-    reduces("(a() -a) b", "-a"); // Names are values, not variable occurrences.
-    reduces("(a() -(a a)) b", "-(a a)");
+    reduces("(a() --a) b", "--a"); // Names are values, not variable occurrences.
+    reduces("(a() --(a a)) b", "--(a a)");
     reduces("(a() \"a\") b", "\"a\"");
     reduces("(a() a) ()", "()"); // Unit is a real supplied value.
     reduces("(a() ()) b", "()");
     reduces("3 : Int", "Int() 3");
-    reduces("(3 : Int) -not-an-integer", "3"); // No implicit classification.
+    reduces("(3 : Int) --not-an-integer", "3"); // No implicit classification.
     reduces("(a : a) b", "b");
     reduces("(a() (a : b)) b", "b() b"); // Colon respects nested binders.
     reduces("(a() (a : a)) b", "a() a");
     reduces("b | (a() a)", "b");
     reduces("b | (a : a)", "b");
-    reduces("apply -(a() a) -(b)", "b");
-    reduces("apply -(a() (b() a)) -(x y)", "x");
+    reduces("apply --(a() a) --(b)", "b");
+    reduces("apply --(a() (b() a)) --(x y)", "x");
     reduces("(f x : x) 3", "f 3");
     reduces("(f x : x : f) (v : v) 3", "3");
     reduces("(f (g x) : x : g : f) (v : v) (v : v) 3", "3");
     reduces("(a : b : a) b", "b() b");
     reduces("(x x : x) (v : v)", "v() v");
-    reduces("(_() \"yes\") (missing -anything)", "\"yes\"");
-    reduces("(\"yes\" : _) (missing -anything)", "\"yes\"");
+    reduces("(_() \"yes\") (missing --anything)", "\"yes\"");
+    reduces("(\"yes\" : _) (missing --anything)", "\"yes\"");
     for (auto spelling : {"a:b", "a: b", "a :b", "a : b"}) reduces(spelling, "b() a");
     rt.run("second := a : a : b");
     reduces("second 1 2", "2");
@@ -276,13 +276,13 @@ void abstractions() {
     rt.define("consume", &consume, &effects);
     rt.run("use := a() (consume a)");
     require(effects.trace.empty(), "defining an abstraction ran its body");
-    require(rt.run("use (source -input)") == effects.value && effects.trace == "PC",
+    require(rt.run("use (source --input)") == effects.value && effects.trace == "PC",
             "abstraction application lost provider effects or opaque identity");
     effects.trace.clear();
-    rt.run("ignore := a() -done");
-    reduces("ignore (source -input)", "-done");
+    rt.run("ignore := a() --done");
+    reduces("ignore (source --input)", "--done");
     require(effects.trace.empty(), "unused abstraction argument was demanded");
-    rt.run("consume() (source -input)");
+    rt.run("consume() (source --input)");
     require(effects.trace.empty(), "native program binder ran before application");
     rt.run("a := \"global\"");
     reduces("a() a", "a() a");
@@ -291,7 +291,7 @@ void abstractions() {
             "substitution mutated the global binding cell");
     auto retained = rt.binding(rt.intern("use"));
     auto before = rt.structural(retained);
-    rt.run("use (source -input)");
+    rt.run("use (source --input)");
     require(rt.binding(rt.intern("use")) == retained && rt.structural(retained) == before,
             "application mutated its retained abstraction");
 
@@ -316,7 +316,7 @@ void abstraction_reuse() {
     rt.define("source", &source, &effects);
     rt.define("consume", &consume, &effects);
     rt.define("consumeTwice", &consume_twice, &effects);
-    auto curried = rt.read("compose consume consume (source -input)");
+    auto curried = rt.read("compose consume consume (source --input)");
     for (int i = 0; i < 2; ++i) {
         effects.trace.clear();
         require(rt.reduce(curried) == effects.value && effects.trace == "PCC",
@@ -324,7 +324,7 @@ void abstraction_reuse() {
     }
     rt.run("twice := x() (consumeTwice x x)");
     effects.trace.clear();
-    require(rt.run("twice (source -input)") == effects.value && effects.trace == "PP",
+    require(rt.run("twice (source --input)") == effects.value && effects.trace == "PP",
             "duplicated argument was evaluated only once");
 
     rt.run("freeValue := 3");
@@ -419,23 +419,24 @@ void updated_surface() {
     rejects([&]{rt.run("@_");}, "wildcard cell created");
     rejects([&]{rt.ensure_cell(rt.intern("_"));}, "host created wildcard cell");
     rt.run("x := 3");auto cell = rt.run("@x");
-    expect("3=-r", "3");expect("*r", "3");
-    rejects([&]{rt.run("-r=3");}, "binding orientation reversed implicitly");
+    require(rt.is_name(rt.read("--name")) && rt.is_symbol(rt.read("-name")) && rt.print(rt.read("--name")) == "--name" && rt.print(rt.read("-name")) == "-name", "a Name is spelled --name, and -name is a symbol");
+    expect("3=--r", "3");expect("*r", "3");
+    rejects([&]{rt.run("--r=3");}, "binding orientation reversed implicitly");
     require(rt.is_cell(cell) && rt.run("@ x") == cell, "attached reference changed identity");
     rt.run("x := 4");require(rt.run("@x") == cell, "reference changed on rebinding");expect("*x", "4");
-    expect("3<5", "-true");expect("5<3", "-false");expect("3<=3", "-true");
-    expect("9007199254740993 < 9007199254740992.0", "-false");
-    expect("9223372036854775807 < 9223372036854775808.0", "-true");
-    expect("-2 < -1.5", "-true");expect("\"a\" < \"b\"", "-true");
-    expect("(3 -lt 5)?", "-true");
-    require(rt.run("3 -lt 5") != rt.run("3 < 5"), "named proposition evaluated without demand");
-    expect("-false && (missing -thing)", "-false");
-    expect("-true || (missing -thing)", "-true");
-    expect("-false || \"right\"", "\"right\"");expect("-true && \"right\"", "\"right\"");
-    expect("-true || -false && \"left-association\"", "\"left-association\"");
-    expect("&& -true \"right\"", "\"right\"");expect("apply -or -(-false 7)", "7");
+    expect("3<5", "--true");expect("5<3", "--false");expect("3<=3", "--true");
+    expect("9007199254740993 < 9007199254740992.0", "--false");
+    expect("9223372036854775807 < 9223372036854775808.0", "--true");
+    expect("-2 < -1.5", "--true");expect("\"a\" < \"b\"", "--true");
+    expect("(3 --lt 5)?", "--true");
+    require(rt.run("3 --lt 5") != rt.run("3 < 5"), "named proposition evaluated without demand");
+    expect("--false && (missing --thing)", "--false");
+    expect("--true || (missing --thing)", "--true");
+    expect("--false || \"right\"", "\"right\"");expect("--true && \"right\"", "\"right\"");
+    expect("--true || --false && \"left-association\"", "\"left-association\"");
+    expect("&& --true \"right\"", "\"right\"");expect("apply --or --(--false 7)", "7");
     expect("0||7", "7");expect("1&&7", "7");
-    require(rt.as_name(rt.read("-pipe"))->target == rt.intern("|"), "pipe Name lost program identity");
+    require(rt.as_name(rt.read("--pipe"))->target == rt.intern("|"), "pipe Name lost program identity");
     require(rt.structural(rt.read("a (|) b")) == rt.structural(rt.read("a | b")), "grouping transparency changed");
     auto multiline=rt.read(R"seed("""first "quote" 'single'
 # not a comment #[nor this]
@@ -468,7 +469,7 @@ int run_all() {
 
     expect_native(rt, "()", "()");
     expect_native(rt, "a", "a");
-    expect_native(rt, "-a", "-a");
+    expect_native(rt, "--a", "--a");
     expect_native(rt, "\"a\"", "\"a\"");
 
     expect_native(rt, "a b c", "a b c");
@@ -492,11 +493,11 @@ int run_all() {
     require(rt.structural(rt.read("text() value")) == rt.structural(rt.read("text () value")),
             "attached Unit changed capture structure");
 
-    expect_native(rt, "-foo", "-foo");
-    expect_native(rt, "-()", "-()");
-    expect_native(rt, "-pipe", "-pipe");
-    expect_native(rt, "-(:)", "-(:)");
-    expect_native(rt, "-((a)(())(b))", "-((a)(())(b))");
+    expect_native(rt, "--foo", "--foo");
+    expect_native(rt, "--()", "--()");
+    expect_native(rt, "--pipe", "--pipe");
+    expect_native(rt, "--(:)", "--(:)");
+    expect_native(rt, "--((a)(())(b))", "--((a)(())(b))");
 
     expect_native(rt, "a : b", "a : b");
     expect_structural(rt, "a : b", "((a)(:)(b))");
@@ -505,12 +506,12 @@ int run_all() {
     expect_structural(rt, "\"a() b | ?\"", "(\"a() b | ?\")");
 
     expect_native(rt,
-        "answer := tool -Value.main",
-        "answer := tool -Value.main");
+        "answer := tool --Value.main",
+        "answer := tool --Value.main");
 
     expect_structural(rt,
-        "answer := tool -Value.main",
-        "((answer)(:=)(tool)(-Value.main))");
+        "answer := tool --Value.main",
+        "((answer)(:=)(tool)(--Value.main))");
 
     rt.define("?", &capture);
     require(rt.print(rt.run("? answer")) == "? answer",
@@ -519,9 +520,9 @@ int run_all() {
     const char* samples[] = {
         "()",
         "a",
-        "-a",
-        "-(=)",
-        "-(:=)",
+        "--a",
+        "--(=)",
+        "--(:=)",
         "\"hello world\"",
         "a b c",
         "a() b",
@@ -530,11 +531,11 @@ int run_all() {
         "a ?",
         "a?",
         "(a b)?",
-        "-a?",
-        "(-a)?",
+        "--a?",
+        "(--a)?",
         "\"literal?\"",
-        "answer := tool -Value.main",
-        "-((a)(())(b))",
+        "answer := tool --Value.main",
+        "--((a)(())(b))",
         "{a | b}",
         "{}",
         "{ls}",
@@ -544,7 +545,7 @@ int run_all() {
         "{ a (b | c) | d }",
         "{(a b)}",
         "\"{x}\"",
-        "-(pipe)"
+        "--(pipe)"
     };
 
     for (const char* source : samples) {
@@ -587,7 +588,7 @@ int run_all() {
     }
 
     // Operators are standalone tokens. Attached spellings keep their meaning:
-    // -3 is a number and -foo a Name, so (3 - 3) and (3 -3) differ.
+    // -3 is a number and --foo a Name, so (3 - 3) and (3 -3) differ.
     {
         seed::Runtime ops;
         auto value = [&](std::string_view source) { return ops.print(ops.run(source)); };
@@ -603,12 +604,12 @@ int run_all() {
         failed = false;
         try { ops.run("9223372036854775807 + 1"); } catch (const std::exception&) { failed = true; }
         require(failed, "integer overflow must fail");
-        for (auto [source, expected] : {std::pair{"3 < 5", "-true"}, {"5 > 3", "-true"}, {"3 >= 3", "-true"},
-                                        {"3 <= 2", "-false"}, {"3 == 3.0", "-true"}, {"\"a\" != \"b\"", "-true"},
-                                        {"1 == \"1\"", "-false"}, {"-x == -x", "-true"}, {"1 + 2 < 4", "-true"},
-                                        {"> 5 3", "-true"}})
+        for (auto [source, expected] : {std::pair{"3 < 5", "--true"}, {"5 > 3", "--true"}, {"3 >= 3", "--true"},
+                                        {"3 <= 2", "--false"}, {"3 == 3.0", "--true"}, {"\"a\" != \"b\"", "--true"},
+                                        {"1 == \"1\"", "--false"}, {"--x == --x", "--true"}, {"1 + 2 < 4", "--true"},
+                                        {"> 5 3", "--true"}})
             require(value(source) == expected, "comparison operator changed");
-        require(ops.print(ops.read("3 -gt 5")) == "3 -gt 5" && value("(3 -gt 5)?") == "-false",
+        require(ops.print(ops.read("3 --gt 5")) == "3 --gt 5" && value("(3 --gt 5)?") == "--false",
                 "named comparison lost its identity or demand");
         failed = false;
         try { ops.run("1 < 2 < 3"); } catch (const std::exception&) { failed = true; }
@@ -626,14 +627,14 @@ int run_all() {
     {
         seed::Runtime steps;
         auto step = [&](std::string_view source) { return steps.print(steps.run(source)); };
-        require(step("((x() (x x)) 5) =>") == "-((5)(5))", "=> did not take one beta step");
-        require(step("(2 + 3) * 4 =>") == "-((5)(*)(4))", "=> did not compute the leftmost operand first");
-        require(step("(2 + 3) * 4 => =>") == "-(20)", "=> => did not take two steps");
+        require(step("((x() (x x)) 5) =>") == "--((5)(5))", "=> did not take one beta step");
+        require(step("(2 + 3) * 4 =>") == "--((5)(*)(4))", "=> did not compute the leftmost operand first");
+        require(step("(2 + 3) * 4 => =>") == "--(20)", "=> => did not take two steps");
         steps.run("twice := (x x) : x");
-        require(step("twice 4 => =>") == "-((4)(4))", "=> did not unfold then substitute");
-        require(step("5 =>") == "-(5)", "=> changed a normal form");
+        require(step("twice 4 => =>") == "--((4)(4))", "=> did not unfold then substitute");
+        require(step("5 =>") == "--(5)", "=> changed a normal form");
         bool stopped = false;
-        try { steps.run("if -true 1 2 =>"); } catch (const std::exception& error) {
+        try { steps.run("if --true 1 2 =>"); } catch (const std::exception& error) {
             stopped = std::string(error.what()).find("effect") != std::string::npos;
         }
         require(stopped, "=> ran a Program instead of stopping before the effect");
@@ -650,7 +651,7 @@ int run_all() {
         require(blocks.print(blocks.read("(\n  only one\n)")) == "only one", "single-statement block changed");
         require(blocks.print(blocks.read("(\n  a\n  | b\n)")) == "a | b", "leading | did not continue a block line");
         require(blocks.print(blocks.read("(\n  a \\\n    b\n  c\n)")) == "(\na b\nc\n)", "continuation or block printing changed");
-        require(blocks.print(blocks.run("if -true (\n  b := 2\n  b * 3\n) ()")) == "6", "block branch did not run");
+        require(blocks.print(blocks.run("if --true (\n  b := 2\n  b * 3\n) ()")) == "6", "block branch did not run");
         require(!seed::Reader::source_complete("if c (\n a\n") && seed::Reader::source_complete("if c (\n a\n)"),
                 "block continuation depth");
     }
@@ -658,8 +659,8 @@ int run_all() {
     // [a b c] is a list literal: each element evaluated once.
     {
         seed::Runtime lists;
-        require(lists.print(lists.read("[1 (2 + 3) -x]")) == "[1 (2 + 3) -x]", "list literal printing changed");
-        require(lists.print(lists.run("[1 (2 + 3) \"x\"]")) == "-((-list)(-((1)(5)(\"x\"))))", "list literal did not evaluate its elements");
+        require(lists.print(lists.read("[1 (2 + 3) --x]")) == "[1 (2 + 3) --x]", "list literal printing changed");
+        require(lists.print(lists.run("[1 (2 + 3) \"x\"]")) == "--((--list)(--((1)(5)(\"x\"))))", "list literal did not evaluate its elements");
         require(lists.collection(lists.run("[1 2 3]")).size() == 3 && lists.collection(lists.run("[]")).empty(),
                 "list literal is not a collection");
         require(lists.is_list_form(lists.read("#[ a comment ] [a]")), "#[ comment no longer precedes a list");

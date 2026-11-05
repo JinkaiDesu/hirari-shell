@@ -1,0 +1,6 @@
+#!/usr/bin/env hirari
+"""
+Move or rename files and directories. An existing directory as the last path receives the sources by name.
+mv "SOURCE" ... "DESTINATION"
+"""
+apply --(provide --files "mv") args?

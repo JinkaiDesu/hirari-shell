@@ -1,0 +1,11 @@
+#!/usr/bin/env hirari
+"""
+Print the contents of files.
+cat "FILE" ...
+For one file's text as a value, use data file "FILE".
+"""
+data bind --index 0
+while (index < argc) (
+    data print (data file (arg index))
+    data bind --index (index + 1)
+)

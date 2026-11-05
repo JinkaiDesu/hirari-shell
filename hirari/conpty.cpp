@@ -129,6 +129,8 @@ void ConPtySession::start(const std::wstring& executable,
         STARTUPINFOEXW startup{};
         startup.StartupInfo.cb = sizeof(startup);
         startup.lpAttributeList = attributes;
+        // With no handles named, the child opens the pseudoconsole, even when this process's own stdio is redirected.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         std::wstring command = make_command_line(executable, arguments);
         PROCESS_INFORMATION info{};
         if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,

@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
             seed::Runtime runtime;
 #endif
             auto sentinel = runtime.intern("conformance_sentinel");
-            auto retained_value = runtime.read("-retained");
+            auto retained_value = runtime.read("--retained");
             runtime.bind(sentinel, retained_value);
             auto original = runtime.read(f[2]);
             const auto original_shape = runtime.structural(original);

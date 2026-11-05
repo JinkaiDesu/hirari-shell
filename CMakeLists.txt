@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(Hirari VERSION 0.6.2 LANGUAGES C CXX)
+project(Hirari VERSION 0.6.3 LANGUAGES C CXX)
 
 include(cmake/RegexLibrary.cmake)
 
@@ -39,6 +39,9 @@ add_library(hirari_runtime STATIC
     hirari/vocabulary.cpp
     hirari/values.cpp
     hirari/regex.cpp
+    hirari/files.cpp
+    hirari/line_editor.cpp
+    hirari/shell_complete.cpp
 )
 
 target_include_directories(hirari_runtime
@@ -194,9 +197,16 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME hirari_shell_supervision COMMAND hirari_shell_supervision_tests $<TARGET_FILE:hirari_test_program> $<TARGET_FILE:hirari>)
         set_tests_properties(hirari_shell_supervision PROPERTIES TIMEOUT 120)
+        add_executable(hirari_terminal_tests tests/terminal_tests.cpp)
+        target_link_libraries(hirari_terminal_tests PRIVATE hirari_runtime)
+        if(MSVC)
+            target_compile_options(hirari_terminal_tests PRIVATE /W4 /permissive- /utf-8)
+        endif()
+        add_test(NAME hirari_terminal COMMAND hirari_terminal_tests $<TARGET_FILE:hirari>)
+        set_tests_properties(hirari_terminal PROPERTIES TIMEOUT 120)
     endif()
-    add_test(NAME hirari_eval_name COMMAND hirari --eval "-foo")
-    set_tests_properties(hirari_eval_name PROPERTIES PASS_REGULAR_EXPRESSION "-foo")
+    add_test(NAME hirari_eval_name COMMAND hirari --eval "--foo")
+    set_tests_properties(hirari_eval_name PROPERTIES PASS_REGULAR_EXPRESSION "--foo")
     add_test(NAME hirari_eval_failure COMMAND hirari --eval "missing_neutral_program arg")
     set_tests_properties(hirari_eval_failure PROPERTIES WILL_FAIL TRUE)
     add_test(NAME hirari_cli_usage COMMAND hirari --unknown)

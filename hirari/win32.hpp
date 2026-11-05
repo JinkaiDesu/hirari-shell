@@ -281,7 +281,6 @@ private:
 inline std::wstring quote_argument(
     std::wstring_view argument
 ) {
-    // Quote every argument: MSYS/Cygwin also treats bare apostrophes as syntax.
     // Standard Windows escaping preserves the same argv for native programs.
     std::wstring out;
 
@@ -339,6 +338,35 @@ inline std::wstring quote_argument(
     return out;
 }
 
+// Words made only of these stay bare, because cmd.exe misreads a quoted "/c".
+// Everything else is quoted: MSYS/Cygwin treats bare apostrophes and globs as syntax.
+inline bool bare_argument(
+    std::wstring_view argument
+) {
+    if (argument.empty()) {
+        return false;
+    }
+
+    for (
+        wchar_t c :
+        argument
+    ) {
+        const bool alphanumeric =
+            (c >= L'a' && c <= L'z') ||
+            (c >= L'A' && c <= L'Z') ||
+            (c >= L'0' && c <= L'9');
+
+        if (
+            !alphanumeric &&
+            std::wstring_view(L"_-./:=+,@%\\").find(c) == std::wstring_view::npos
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 inline std::wstring make_command_line(
     const std::wstring& executable,
     const std::vector<
@@ -358,12 +386,15 @@ inline std::wstring make_command_line(
             L' '
         );
 
-        result +=
-            quote_argument(
-                widen(
-                    argument
-                )
+        const std::wstring wide =
+            widen(
+                argument
             );
+
+        result +=
+            bare_argument(wide)
+                ? wide
+                : quote_argument(wide);
     }
 
     return result;

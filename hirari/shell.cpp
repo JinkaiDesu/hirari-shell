@@ -1,6 +1,7 @@
 #include "hirari/shell.hpp"
 #include "hirari/win32.hpp"
 #include "hirari/regex.hpp"
+#include "hirari/files.hpp"
 
 #include <exception>
 #include <iostream>
@@ -48,6 +49,21 @@ std::string script_text(seed::Runtime& r, seed::Ptr form) {
     if (!r.is_literal(value)) throw std::runtime_error("file/program path requires a quoted string");
     return r.as_literal(value)->bytes;
 }
+// NAME := EXPR, EXPR = NAME and data bind: statements that exist for their binding.
+bool definition(seed::Runtime& r, seed::Ptr form) {
+    while (r.is_relation(form)) {
+        auto terms = r.terms(r.as_node(form));
+        if (terms.size() == 1) { form = terms[0]; continue; }
+        auto named = [&](seed::Ptr term, std::string_view text) {
+            if (r.is_name(term)) term = r.as_name(term)->target;
+            return r.is_symbol(term) && r.as_symbol(term)->text == text;
+        };
+        if (terms.size() < 2) return false;
+        return named(terms[0], ":=") || named(terms[1], ":=") || named(terms[0], "=") || named(terms[1], "=") ||
+               (named(terms[0], "data") && named(terms[1], "bind"));
+    }
+    return false;
+}
 }
 
 Shell::Shell(
@@ -62,6 +78,7 @@ Shell::Shell(
         host_
     ), values_(seed_,processes_,host_),jobs_(values_,host_),control_(seed_,host_) {
     install_regex(values_);
+    install_files(values_);
     seed_.set_resolver(
         &Shell::resolve,
         this
@@ -119,10 +136,13 @@ seed::Ptr Shell::block(seed::Runtime& r, seed::Node* relation, seed::Ptr context
     seed::Ptr result = r.arena().unit();
     for (std::size_t i = first; i < terms.size(); ++i) {
         if (shell.host_.interrupted()) throw std::runtime_error("Seed block interrupted");
+        shell.quiet_ = nullptr;
         result = r.demand(terms[i]);
+        if (definition(r, terms[i])) shell.quiet_ = result;
         if (i + 1 == terms.size()) break;
         ProcessResult process;
         bool failed = ProcessHost::unpack(r, result, process) && process.status != 0;
+        if (failed) shell.quiet_ = nullptr;
         shell.present(result);
         if (failed)
             throw std::runtime_error("block line " + std::to_string(i - first + 1) + " (" + r.print(terms[i]) +
@@ -140,13 +160,7 @@ bool Shell::prefer_script(std::string_view name) {
     return letter;
 }
 
-std::filesystem::path Shell::find_script(const std::string& name, bool explicit_file) const {
-    auto file = text_path(name);
-    if (file.extension() != ".seed") {
-        if (explicit_file) throw std::runtime_error("Seed programs require a .seed file");
-        if (file.has_extension()) return {};
-        file += ".seed";
-    }
+std::vector<std::filesystem::path> Shell::script_roots(bool search_path) const {
     std::vector<std::filesystem::path> roots;
     if (!script_frames_.empty()) roots.push_back(script_frames_.back().path.parent_path());
     roots.push_back(std::filesystem::current_path());
@@ -155,13 +169,24 @@ std::filesystem::path Shell::find_script(const std::string& name, bool explicit_
     auto count=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
     if(count && count<module.size()){module.resize(count);roots.push_back(std::filesystem::path(module).parent_path()/L"Commands");}
 #endif
-    if (!explicit_file && !file.has_parent_path()) {
+    if (search_path) {
         for (const auto* key : {L"HIRARI_PATH", L"PATH"}) {
             std::istringstream paths(shell_environment(key));
             std::string root;
             while (std::getline(paths, root, ';')) if (!root.empty()) roots.push_back(text_path(root));
         }
     }
+    return roots;
+}
+
+std::filesystem::path Shell::find_script(const std::string& name, bool explicit_file) const {
+    auto file = text_path(name);
+    if (file.extension() != ".seed") {
+        if (explicit_file) throw std::runtime_error("Seed programs require a .seed file");
+        if (file.has_extension()) return {};
+        file += ".seed";
+    }
+    auto roots = script_roots(!explicit_file && !file.has_parent_path());
     if (file.is_absolute()) roots = {std::filesystem::path{}};
     for (const auto& root : roots) {
         auto candidate = root / file;
@@ -240,7 +265,7 @@ seed::Ptr Shell::script_argument(seed::Runtime& r, seed::Node* relation, seed::P
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
         throw std::runtime_error("arg INDEX requires a non-negative integer");
     auto index = std::stoull(text);
-    if (index >= arguments.size()) throw std::runtime_error("script argument out of range: " + text);
+    if (index >= arguments.size()) throw std::runtime_error("arg " + text + ": this program received " + std::to_string(arguments.size()) + " argument(s)");
     return arguments[static_cast<std::size_t>(index)];
 }
 
@@ -331,10 +356,24 @@ void Shell::wait_foreground() {
 #endif
 }
 
+std::string Shell::prompt() const {
+    if (waiting()) return ".....> ";
+    auto directory = path_text(std::filesystem::current_path());
+    auto home = shell_environment(L"USERPROFILE");
+    if (!home.empty() && directory.size() >= home.size() && directory.compare(0, home.size(), home) == 0 &&
+        (directory.size() == home.size() || directory[home.size()] == '\\' || directory[home.size()] == '/'))
+        directory = "~" + directory.substr(home.size());
+    std::string text;
+    if (execution_status_ != 0) text = "\x1b[31m[" + std::to_string(execution_status_) + "]\x1b[0m ";
+    return text + "\x1b[36m" + directory + "\x1b[0m > ";
+}
+
 int Shell::run() {
     interactive_session_ = true;
+    const bool terminal = host_.terminal_capable();
     auto banner=shell_environment(L"HIRARI_BANNER");
-    host_.write(banner.empty()?"HIRARI\nType `help` to begin!\n\n":banner+"\n");
+    if(!banner.empty())host_.write(banner+"\n");
+    else if(terminal)host_.write("hirari. `help` lists what's here, `help --seed` teaches the language, Tab completes.\n\n");
     // The caller may name a startup program.
     // Evaluate in this session so definitions/world context reach the prompt.
     auto startup = shell_environment(L"HIRARI_STARTUP");
@@ -370,62 +409,19 @@ int Shell::run() {
         if (processes_.quitting()) return status();
     }
     std::string line;
+    std::filesystem::path history;
+    if (vocabulary_) history = vocabulary_->directory() / "history";
+    LineEditor editor(host_, history, [this](std::string_view before) { return complete(before); });
     for (;;) {
 #ifdef _WIN32
-        if (interactive()) { wait_foreground(); continue; }
+        if (interactive()) { wait_foreground(); execution_status_ = processes_.last_status(); continue; }
 #endif
-        host_.write(waiting() ? ".....> " : "hirari > ");
-#ifdef _WIN32
-        if (host_.terminal_capable()) {
-            HANDLE console = GetStdHandle(STD_INPUT_HANDLE);
-            DWORD saved_mode = 0;
-            GetConsoleMode(console, &saved_mode);
-            SetConsoleMode(console, ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS);
-            struct InputModeGuard {
-                HANDLE console; DWORD mode;
-                ~InputModeGuard() { SetConsoleMode(console, mode); }
-            } guard{console, saved_mode};
-            std::wstring text;
-            bool cancelled = false, ended = false, entered = false;
-            while (!entered && !cancelled && !ended) {
-                if (host_.interrupted()) { cancelled = true; break; }
-                DWORD ready = WaitForSingleObject(console, 30);
-                if (ready == WAIT_TIMEOUT) continue;
-                if (ready != WAIT_OBJECT_0) { ended = true; break; }
-                INPUT_RECORD event{};
-                DWORD count = 0;
-                if (!ReadConsoleInputW(console, &event, 1, &count)) { ended = true; break; }
-                if (event.EventType != KEY_EVENT || !event.Event.KeyEvent.bKeyDown) continue;
-                const auto& key = event.Event.KeyEvent;
-                wchar_t c = key.uChar.UnicodeChar;
-                if (c == 3) { cancelled = true; break; }
-                if ((c == 4 || c == 26) && text.empty()) { ended = true; break; }
-                if (c == '\r' || c == '\n') { entered = true; break; }
-                for (WORD repeat = 0; repeat < key.wRepeatCount; ++repeat) {
-                    if (c == '\b') {
-                        if (!text.empty()) {
-                            wchar_t last = text.back();
-                            text.pop_back();
-                            if (last >= 0xdc00 && last <= 0xdfff && !text.empty()) text.pop_back();
-                            host_.write("\b \b");
-                        }
-                    } else if (c >= L' ' || c == L'\t') {
-                        text.push_back(c);
-                        if (c >= 0xd800 && c <= 0xdbff) continue;
-                        std::wstring_view echo(&text.back(), 1);
-                        if (c >= 0xdc00 && c <= 0xdfff && text.size() >= 2)
-                            echo = std::wstring_view(text.data() + text.size() - 2, 2);
-                        host_.write(win32::narrow(echo));
-                    }
-                }
-            }
-            if (ended) break;
-            if (cancelled) { cancel_input(); host_.write("^C\n"); continue; }
-            host_.write("\n");
-            line = win32::narrow(text);
-        } else
-#endif
-        {
+        if (terminal) {
+            auto outcome = editor.read(prompt(), line);
+            if (outcome == LineEditor::Outcome::End) break;
+            if (outcome == LineEditor::Outcome::Cancelled) { cancel_input(); continue; }
+            editor.remember(line);
+        } else {
             if (!std::getline(std::cin, line)) break;
             if (host_.interrupted()) { cancel_input(); continue; }
         }
@@ -559,7 +555,9 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
         ProcessHost& processes;
         ~ForegroundGuard() { processes.end_foreground(); }
     } guard{processes_};
+    quiet_ = nullptr;
     seed::Ptr result = seed_.reduce(form);
+    if (definition(seed_, form)) quiet_ = result;
     if (result == form && seed_.is_relation(form) && !seed_.is_abstraction(form)) {
         auto terms = seed_.terms(seed_.as_node(form));
         if (!terms.empty() && seed_.is_symbol(terms.front()) &&
@@ -576,7 +574,11 @@ seed::Ptr Shell::evaluate(std::string_view source, bool display) {
 void Shell::report(const std::exception& error) {
     execution_status_ = 1;
     processes_.record_failure();
-    host_.error(std::string("error: ") + error.what() + '\n');
+    std::string text = error.what();
+    static constexpr std::string_view missing = "program not found: ";
+    if (auto at = text.find(missing); at != std::string::npos)
+        if (auto hint = suggestion(text.substr(at + missing.size())); !hint.empty()) text += "." + hint;
+    host_.error((host_.terminal_capable() ? "\x1b[31merror:\x1b[0m " : "error: ") + text + '\n');
 }
 seed::Ptr Shell::execute(std::string_view source) {
     try { return evaluate(source); }
@@ -640,10 +642,14 @@ seed::Ptr Shell::evaluate_script(const std::filesystem::path& path, std::vector<
             first_form = false;
             if (processes_.interactive()) { wait_foreground(); execution_status_ = processes_.last_status(); result = seed_.arena().unit(); }
             if (execution_status_ != 0) {
+                quiet_ = nullptr;
                 present(result);
-                throw std::runtime_error("entry program returned status " + std::to_string(execution_status_));
+                throw std::runtime_error("program exited with status " + std::to_string(execution_status_));
             }
         } catch (const std::exception& error) {
+            // The shell's own commands fail in the caller's terms, without their insides.
+            auto roots = script_roots(false);
+            if (std::filesystem::absolute(path).parent_path() == roots.back()) throw;
             throw std::runtime_error(path_text(path) + ':' + std::to_string(start) + ": " + error.what());
         }
         pending.clear();
@@ -686,7 +692,7 @@ void Shell::cancel_input() {
 void Shell::present(
     seed::Ptr result
 ) {
-    if (!result || seed_.is_unit(result)) {
+    if (!result || result == quiet_ || seed_.is_unit(result)) {
         return;
     }
     if (descriptions_.contains(result) && seed_.is_literal(result)) {
@@ -741,18 +747,10 @@ void Shell::present(
         return;
     }
 
-    const std::string text =
-        seed_.print(
-            result
-        );
-
-    host_.write(
-        text
-    );
-
-    host_.write(
-        "\n"
-    );
+    const std::string text = values_.show(result);
+    if (text.empty()) return;
+    host_.write(text);
+    host_.write("\n");
 }
 
 } // namespace hirari

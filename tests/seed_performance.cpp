@@ -14,7 +14,7 @@ constexpr int warmup = 200;
 constexpr std::array<const char*, 4> names{
     "identity", "curried composition", "short circuit", "canonical curry"};
 constexpr std::array<const char*, 4> sources{
-    "identity 3", "compose identity identity 3", "-false || identity 3",
+    "identity 3", "compose identity identity 3", "--false || identity 3",
     "canonical identity identity 3"};
 
 void prepare(seed::Runtime& runtime) {

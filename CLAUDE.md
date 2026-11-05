@@ -27,17 +27,17 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 
 | Form | Meaning |
 |---|---|
-| `foo` / `-foo` / `"foo"` | A symbol that resolves / an inert Name / text. `:foo` is not a Name. Applying an unknown program fails. |
+| `foo` / `--foo` / `"foo"` | A symbol that resolves / an inert Name / text. `-foo` and `:foo` are not Names; `-foo` is an ordinary symbol. Applying an unknown program fails. |
 | `a b` == `a(b)` == `b \| a` | One application. Outside braces, `\|` is reverse application, not a pipe. |
 | `( )` / `[ ]` / `{ }` / `#[ ]` | Grouping and application / list (elements evaluated once) / live process streams / nestable comment. |
 | `BODY : BINDER` == `BINDER() BODY` | An abstraction. **The body is on the left**: `twice := (data list x x) : x`. |
 | `name := EXPR` | Lazy binding: every reference re-runs `EXPR`. |
-| `data bind -name EXPR` | Evaluates once and keeps the value. Use it for handles and answers. |
-| `@name` / `*name` / `form?` | The binding cell / read the cell / demand (`? -NAME` is help). |
+| `data bind --name EXPR` | Evaluates once and keeps the value. Use it for handles and answers. |
+| `@name` / `*name` / `form?` | The binding cell / read the cell / demand (`? --NAME` is help). |
 | `EXPR =>` | One reduction step, reified. Stops before effects. |
 | `< <= > >= == !=` | Comparison (outside `{ }`). Mixed kinds are `!=`; ordering mixed kinds fails. |
 | `+ - * /` | Arithmetic with spaces: `(3 - 3)` is 0, `(3 -3)` is the product `3 -3`. `+` joins strings. |
-| `A && B`, `A \|\| B`, `if C T E`, `while C B`, `for -i [ … ] B` | Lazy control. Unit, `-false`, `0` and `""` are false. A process is truthy on exit 0. |
+| `A && B`, `A \|\| B`, `if C T E`, `while C B`, `for --i [ … ] B` | Lazy control. Unit, `--false`, `0` and `""` are false. A process is truthy on exit 0. |
 | `attempt X`, `fail "msg"` | Observe a failure as a record / raise one. |
 
 **Layout:**
@@ -52,13 +52,16 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 - Outside braces, `>` compares.
 
 **Gotchas:**
-- **Native answers** are `-stdout -stderr -status`. `data get ANS "stdout"` is text, and `data get ANS "status"` is already an integer. Native stdout text is never auto-converted; use `data integer`.
+- **Native answers** are `--stdout --stderr --status`. `data get ANS "stdout"` is text, and `data get ANS "status"` is already an integer. Native stdout text is never auto-converted; use `data integer`.
 - **`exec` kills the child's process tree when it returns.** Serve long-lived processes with `job start`.
-- **Native argv has no shell re-parsing.** Names project to flags (`-c`), `()` is an empty argument, and words should be quoted.
+- **Native argv has no shell re-parsing.** `-c` passes as `-c`, the Name `--long` as `--long`, `()` is an empty argument, and words should be quoted.
 - **A bare built-in inside arguments is a value, not a call.** Write `(pwd)`.
 - **A name with a lowercase letter runs a native program on `PATH` before a `.seed` command of that name** (a `tool.exe` shadows `tool.seed`); an all-capital name (`TOOL`) prefers the Seed command. Commands are found in the calling script's folder, the cwd, hirari's `Commands`, then `HIRARI_PATH` and `PATH`.
-- **A `.seed` file shows every statement result that is not Unit,** also when called as a command from another script; its last result is its answer. `if (data bind -x E) () ()` binds quietly.
-- **`args` is a Name, not a list:** `data size args` fails. Use `argc` and `arg I`.
+- **A `.seed` file shows every statement result that is not Unit,** also when called as a command from another script; its last result is its answer. Definitions (`:=`, `=`, `data bind`) still answer but are never shown.
+- **`name := EXPR` also evaluates `EXPR` once at the definition,** so a definition with an effect runs it then, and again at each reference.
+- **Leading text in an abstraction's body is its docstring:** `("hi " + n) : n` drops `"hi "` and `f "bob"` answers `+ "bob"`. Put the text elsewhere (`(n + "!") : n` works) or bind it first.
+- **`data print` prints text raw** and other values as they display, adding a line ending unless the last text has one. A bare text statement shows quoted.
+- **`args` is a Name, not a list:** `data size args` fails, and `for --x args` hands a single argument over as the whole Name, not the argument. Use `argc` and `arg I`.
 
 **Composition:**
 - `source FILE` keeps the file's definitions.
@@ -67,7 +70,7 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 - `world open "ROOT"` reads a strict `world.toml` (`[world] name, version = 1`, `[entry] program`) and runs that world-owned Seed entry.
 
 **Look before you build:**
-- `help` lists the built-ins, and `help -NAME` (operators: `help -(=>)`), `inspect -NAME` and `capability list` describe them. `EXPR =>` shows the next step.
+- `help` lists the built-ins, `help --seed` is the language on one page, and `help --NAME` (operators: `help --(=>)`), `inspect --NAME` and `capability list` describe them. `EXPR =>` shows the next step.
 - `library/*.seed` docstrings (installed as `Commands/`) and the tests in `tests/` are the reference.
 - Never invent operators or change Seed semantics. Changing Name identity, binding laziness, capture or substitution requires the owner's explicit approval and conformance tests.
 
@@ -76,7 +79,7 @@ This describes hirari `main` from 0.6.0 (the `seed-blocks-operators` branch is m
 - **Authority:** `seed/`, `hirari/`, `library/` and `tests/` define the language. Whenever you change semantics, built-ins or tests, update the Seed essentials above to match.
 - **Only two Markdown files:** this `CLAUDE.md` and the user-facing `README.md` (under 80 lines). The old long-form docs (`SEED_SPEC.md` and the others) live in history only, last at commit `e9d9269`; don't add them back.
 - **Protected semantics:** never change the reader, reduction, Name identity, binding laziness, capture/substitution, `|` orientation or `{}` pipelines without the owner's explicit approval, and never without updating `seed_tests`, `integration_tests` and the Lean corpus where they apply.
-- **Introspect first:** before adding a program, check `hirari --eval help`, `help -NAME`, `inspect -NAME` and `capability list`. New vocabulary should be a documented `library/*.seed` command or a provider, not a special case in the evaluator.
+- **Introspect first:** before adding a program, check `hirari --eval help`, `help --NAME`, `inspect --NAME` and `capability list`. New vocabulary should be a documented `library/*.seed` command or a provider, not a special case in the evaluator.
 - **Help text:** help is derived from registry descriptions and docstrings. Do not hard-code tables in `shell_help.cpp`.
 
 ## Ownership and topics

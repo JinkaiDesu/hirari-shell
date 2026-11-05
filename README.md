@@ -23,19 +23,22 @@ writes a release folder. An installed shell needs no development toolchain.
 ## Run
 
 - `hirari` starts the interactive shell; `exit` or `quit` ends it.
-- `hirari --eval SOURCE` evaluates one expression, and `hirari --file PATH` runs a UTF-8 script.
+- `hirari FILE.seed [ARGUMENTS]` runs a UTF-8 script, and `hirari --eval SOURCE` evaluates one expression.
 - Source errors report the file and line, stop execution and return nonzero.
+- At the prompt, Tab completes names and paths, Up and Ctrl+R search the saved history, and the arrows, Home, End and Ctrl+A/E/K/U/W/Y edit the line.
+- `echo`, `cat`, `ls`, `mkdir`, `rm`, `cp` and `mv` are built in, unless `PATH` has a program of that name.
+- `help --seed` teaches the language on one page.
 
 ## Seed at a glance
 
 | Form | Meaning |
 | --- | --- |
 | `foo` | Resolve a binding or a host program. |
-| `-foo` | A Name: the identity of foo. |
+| `--foo` | A Name: the identity of foo. `-c` is an ordinary symbol, for flags. |
 | `"foo"` | Text. |
 | `a b`, `a(b)`, `b \| a` | The same application, in three orientations. |
 | `greeting := "hello"` | Bind an expression; each use re-runs it. |
-| `data bind -name EXPR` | Evaluate once and keep the value. |
+| `data bind --name EXPR` | Evaluate once and keep the value. |
 | `[1 2 3]` | A list; each element evaluated once. |
 | `3 - 3`, `a < b` | Arithmetic and comparison, written with spaces. |
 | `expr =>` | One reduction step, without running effects. |
@@ -45,13 +48,13 @@ writes a release folder. An installed shell needs no development toolchain.
 
 ```text
 greeting := "hello"
-if -true "yes" "no"
-for -item -("alpha" "beta") item
+if --true "yes" "no"
+for --item --("alpha" "beta") item
 git "status"
 { python -c "print('z'); print('a')" | sort }
 ```
 
-`help`, `help -NAME`, `inspect -NAME` and `capability list` describe every built-in.
+`help`, `help --NAME`, `inspect --NAME` and `capability list` describe every built-in.
 
 ## Background work
 

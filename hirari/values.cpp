@@ -6,12 +6,64 @@
 #include "hirari/world.hpp"
 #include <stdexcept>
 #include <algorithm>
+#include <iterator>
 #include <optional>
+#include <string_view>
 namespace hirari {
 namespace {
 std::string symbol(seed::Runtime& r,seed::Ptr p){if(r.is_name(p))p=r.as_name(p)->target;if(!r.is_symbol(p))throw std::runtime_error("expected an identity");return r.as_symbol(p)->text;}
 std::string text(seed::Runtime& r,seed::Ptr p){p=r.reduce(p);if(!r.is_literal(p))throw std::runtime_error("expected literal text");return r.as_literal(p)->bytes;}
 std::vector<seed::Ptr> items(seed::Runtime& r,seed::Ptr p){if(r.is_unit(p))return {};return r.is_relation(p)?r.terms(r.as_node(p)):std::vector<seed::Ptr>{p};}
+// Unit, or a product holding nothing else: what a loop of Unit bodies answers.
+bool blank(seed::Runtime& r,seed::Ptr p,unsigned depth=0){
+    if(r.is_unit(p))return true;
+    if(depth>64 || !r.is_name(p) || r.is_unit(r.as_name(p)->target) || !r.is_relation(r.as_name(p)->target))return false;
+    auto terms=r.terms(r.as_node(r.as_name(p)->target));
+    return !terms.empty() && std::all_of(terms.begin(),terms.end(),[&](seed::Ptr term){return blank(r,term,depth+1);});
+}
+constexpr std::size_t show_width=100;
+}
+std::string Values::show(seed::Ptr p){return show(p,true,0);}
+std::string Values::show(seed::Ptr p,bool top,unsigned depth) {
+    auto& r=runtime_;
+    if(depth>64 || foreign_.contains(p))return r.print(p);
+    if(structured(p)) {
+        auto fields=r.terms(r.as_node(r.as_name(p)->target));auto tag=symbol(r,fields[0]);
+        if(tag=="integer" || tag=="float")return r.is_literal(fields[1])?r.as_literal(fields[1])->bytes:r.print(p);
+        if(!r.is_name(fields[1]))return r.print(p);
+        auto entries=items(r,r.as_name(fields[1])->target);
+        if(tag=="list") {
+            std::string line="[";std::vector<std::string> shown;
+            for(auto entry:entries){shown.push_back(show(entry,false,depth+1));if(line.size()>1)line+=' ';line+=shown.back();}
+            line+=']';
+            if(!top || line.size()<=show_width)return line;
+            std::string lines="[\n";for(const auto& entry:shown)lines+="  "+entry+"\n";return lines+"]";
+        }
+        std::vector<std::pair<std::string,std::string>> pairs;std::size_t longest=0;
+        for(auto field:entries) {
+            if(!r.is_name(field) || !r.is_relation(r.as_name(field)->target))return r.print(p);
+            auto pair=r.terms(r.as_node(r.as_name(field)->target));if(pair.size()!=2)return r.print(p);
+            pairs.emplace_back(symbol(r,pair[0]),show(pair[1],false,depth+1));longest=std::max(longest,pairs.back().first.size());
+        }
+        if(pairs.empty())return "(data record)";
+        std::string out;
+        if(!top) {
+            out="(data record";for(const auto& [key,value]:pairs)out+=" --"+key+" "+value;return out+")";
+        }
+        for(const auto& [key,value]:pairs){if(!out.empty())out+='\n';out+=key+std::string(longest-key.size()+2,' ')+value;}
+        return out;
+    }
+    // A loop over nothing, or over one Unit body, answers the empty product.
+    if(top && r.is_name(p) && r.is_unit(r.as_name(p)->target))return {};
+    if(r.is_name(p) && !r.is_unit(r.as_name(p)->target) && r.is_relation(r.as_name(p)->target)) {
+        auto terms=r.terms(r.as_node(r.as_name(p)->target));
+        if(terms.empty())return r.print(p);
+        if(top && blank(r,p))return {};
+        std::string out="--(";
+        for(std::size_t i=0;i<terms.size();++i){if(i)out+=' ';out+=show(terms[i],false,depth+1);}
+        return out+")";
+    }
+    return r.print(p);
 }
 Values::Values(seed::Runtime& r,ProcessHost& p,Host& h):runtime_(r),processes_(p),host_(h) {
     r.define("provide",&Values::provide,this);r.define("data",&Values::data,this);
@@ -46,7 +98,7 @@ std::string Values::description(std::string_view identity) const {
 }
 seed::Ptr Values::capability(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
     auto& self=*static_cast<Values*>(context);auto terms=r.terms(relation);
-    if(terms.size()<2)throw std::runtime_error("capability list | register -IDENTITY EXECUTABLE [DESCRIPTION]");
+    if(terms.size()<2)throw std::runtime_error("capability list | register --IDENTITY EXECUTABLE [DESCRIPTION]");
     auto op=symbol(r,terms[1]);
     if(op=="register-library" && (terms.size()==4 || terms.size()==5)) {
         auto name=symbol(r,terms[2]);auto path=text(r,terms[3]);
@@ -76,7 +128,7 @@ seed::Ptr Values::capability(seed::Runtime& r,seed::Node* relation,seed::Ptr con
         }
         return r.arena().unit();
     }
-    throw std::runtime_error("capability list | register -IDENTITY EXECUTABLE [DESCRIPTION]");
+    throw std::runtime_error("capability list | register --IDENTITY EXECUTABLE [DESCRIPTION]");
 }
 Json Values::form(seed::Ptr p,std::vector<seed::Ptr> bound,std::vector<seed::Ptr> expanding,unsigned depth) {
     auto& r=runtime_;if(depth>64)throw std::runtime_error("form nesting exceeds 64");
@@ -228,8 +280,11 @@ seed::Ptr Values::provide(seed::Runtime& r,seed::Node* relation,seed::Ptr contex
 seed::Ptr Values::data(seed::Runtime& r,seed::Node* relation,seed::Ptr context) {
     auto& self=*static_cast<Values*>(context);auto terms=r.terms(relation);
     if(terms.empty() || !r.is_symbol(terms[0]) || r.as_symbol(terms[0])->text!="data")return relation;
-    if(terms.size()<2)throw std::runtime_error("data bind|get|at|size|json|text|print|record|env|file|parse-json ...");
+    if(terms.size()<2)throw std::runtime_error("data bind|get|at|size|kind|form|list|record|read|file|env|integer|real|text|json|parse-json|print ...; see help --data");
     auto operation=symbol(r,terms[1]);
+    static constexpr std::string_view operations[]{"bind","get","at","size","kind","form","list","record","read","file","env","integer","real","text","json","parse-json","print"};
+    if(std::find(std::begin(operations),std::end(operations),std::string_view(operation))==std::end(operations))
+        throw std::runtime_error("data: unknown operation '"+operation+"'; see help --data");
     if(operation=="list") {
         // Keep live references intact instead of serializing through a provider.
         std::vector<seed::Ptr> entries;
@@ -292,11 +347,16 @@ seed::Ptr Values::data(seed::Runtime& r,seed::Node* relation,seed::Ptr context) 
         return r.arena().make_literal(std::move(bytes));
     }
     if(operation=="print") {
+        bool line_ended=false;
         for(std::size_t i=2;i<terms.size();++i){
             auto value=r.reduce(terms[i]);
-            if(i!=2)self.host_.write(" ");self.host_.write(r.print(value));
+            if(i!=2)self.host_.write(" ");
+            auto shown=r.is_literal(value)?r.as_literal(value)->bytes:self.show(value);
+            self.host_.write(shown);
+            line_ended=r.is_literal(value) && shown.ends_with('\n');
         }
-        self.host_.write("\n");return r.arena().unit();
+        if(!line_ended)self.host_.write("\n");
+        return r.arena().unit();
     }
     if (operation == "read" && terms.size() == 3) {
         std::ifstream input(text_path(text(r, terms[2])), std::ios::binary);

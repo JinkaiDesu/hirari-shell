@@ -1,0 +1,8 @@
+#!/usr/bin/env hirari
+"""
+List a directory, the current one by default. Directories end in /.
+ls ["PATH"]
+For names, kinds and sizes as data, use provide --files "list" "PATH".
+"""
+for --entry (provide --files "list" (if (argc) (arg 0) ".")) \
+    (data print ((data get entry "name") + (if ((data get entry "kind") == "directory") "/" "")))

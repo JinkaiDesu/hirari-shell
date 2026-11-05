@@ -8,6 +8,7 @@
 #include "hirari/values.hpp"
 #include "hirari/jobs.hpp"
 #include "hirari/control.hpp"
+#include "hirari/line_editor.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -72,7 +73,18 @@ public:
         return processes_;
     }
 
+    // What Tab offers for the text before the cursor.
+    Completion complete(std::string_view before_cursor);
+
 private:
+    // Every name a user can call: built-ins, definitions, Seed commands and,
+    // with `native`, the programs on PATH. Sorted and unique.
+    std::vector<std::string> known_names(bool native);
+    // " Did you mean: a, b?" for a mistyped name, or empty.
+    std::string suggestion(const std::string& name);
+    // Where find_script looks. HIRARI_PATH and PATH come last, with `search_path`.
+    std::vector<std::filesystem::path> script_roots(bool search_path) const;
+    std::string prompt() const;
     static seed::Ptr world(seed::Runtime&, seed::Node*, seed::Ptr);
     static seed::Program resolve(seed::Runtime&, seed::Symbol*, seed::Ptr);
     static seed::Ptr script_command(seed::Runtime&, seed::Node*, seed::Ptr);
@@ -118,6 +130,11 @@ private:
     std::unordered_set<seed::Ptr> descriptions_;
     int execution_status_ = 0;
     std::string pending_;
+    // The answer of a definition statement: it stays an answer, but isn't shown.
+    seed::Ptr quiet_ = nullptr;
+    // Programs on PATH, rescanned only when PATH changes.
+    std::string path_scanned_;
+    std::vector<std::string> path_programs_;
 };
 
 } // namespace hirari

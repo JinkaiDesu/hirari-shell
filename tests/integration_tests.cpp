@@ -78,7 +78,7 @@ void pipeline_failures(Shell& shell,MemoryHost& host) {
         if(host.err.find(expected)==std::string::npos)throw std::runtime_error("pipeline failure lacked context: "+host.err);
     };
     ProcessResult p;
-    require(ProcessHost::unpack(shell.seed(),run("data bind -middle {hirari_test_program emit \"a\" | hirari_test_program fail | hirari_test_program relay}"),p)&&
+    require(ProcessHost::unpack(shell.seed(),run("data bind --middle {hirari_test_program emit \"a\" | hirari_test_program fail | hirari_test_program relay}"),p)&&
             p.status==7&&p.stages==std::vector<int>{0,7,0},"nonzero middle stage status was hidden");
     require(shell.seed().print(run("if {hirari_test_program fail | hirari_test_program relay} \"yes\" \"no\""))=="\"no\"","pipeline status lost its truth");
     fails("{hirari_test_program emit \"a\" | missing_neutral_program}","{} stage 2 is not a native process: missing_neutral_program");
@@ -89,13 +89,13 @@ void pipeline_failures(Shell& shell,MemoryHost& host) {
     // The consumer exits after one line; a producer that ignores the broken
     // pipe is ended (status 141) instead of holding the pipeline open.
     auto started=std::chrono::steady_clock::now();
-    require(ProcessHost::unpack(shell.seed(),run("data bind -cut {hirari_test_program stubborn | hirari_test_program head-one}"),p)&&
+    require(ProcessHost::unpack(shell.seed(),run("data bind --cut {hirari_test_program stubborn | hirari_test_program head-one}"),p)&&
             p.status==0&&p.out=="x\n"&&p.stages==std::vector<int>{141,0},"downstream early exit left the producer running");
     require(std::chrono::steady_clock::now()-started<std::chrono::seconds(15),"early-exit cleanup took too long");
     // Ctrl+C ends every stage; no child survives.
     InterruptHost cancelling;Shell cancellable(cancelling);
     std::thread interrupter([&]{std::this_thread::sleep_for(std::chrono::milliseconds(800));cancelling.stop=true;});
-    auto cancelled=cancellable.execute("data bind -cancelled {hirari_test_program stubborn | hirari_test_program pid-sleep 30000}");
+    auto cancelled=cancellable.execute("data bind --cancelled {hirari_test_program stubborn | hirari_test_program pid-sleep 30000}");
     interrupter.join();
     require(cancelled&&ProcessHost::unpack(cancellable.seed(),cancelled,p)&&p.status==130,"interrupt did not end the pipeline");
     DWORD pid=static_cast<DWORD>(std::stoul(p.out));
@@ -117,10 +117,10 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     auto run=[&](std::string_view source){auto p=shell.execute(source);if(!p)throw std::runtime_error(std::string(source)+"\n"+host.err);return p;};
     run("greeting := \"hello\"");require(shell.seed().print(run("greeting"))=="\"hello\"","binding regression");
     run("\"reverse\" = greeting");require(shell.seed().print(run("greeting"))=="\"reverse\"","inverse binding regression");
-    require(shell.seed().is_name(run("-foo")),"Name became literal");require(shell.seed().is_literal(run("\"foo\"")),"literal became Name");require(shell.seed().is_unit(run("()")),"unit regression");
-    require(shell.seed().print(run("if -true \"yes\" \"no\""))=="\"yes\"","if true regression");require(shell.seed().print(run("if -false \"yes\" \"no\""))=="\"no\"","if false regression");
+    require(shell.seed().is_name(run("--foo")),"Name became literal");require(shell.seed().is_literal(run("\"foo\"")),"literal became Name");require(shell.seed().is_unit(run("()")),"unit regression");
+    require(shell.seed().print(run("if --true \"yes\" \"no\""))=="\"yes\"","if true regression");require(shell.seed().print(run("if --false \"yes\" \"no\""))=="\"no\"","if false regression");
     require(shell.seed().print(run("if (hirari_test_program emit) \"yes\" \"no\""))=="\"yes\"","process success condition");require(shell.seed().print(run("if (hirari_test_program fail) \"yes\" \"no\""))=="\"no\"","process failure condition");
-    run("item := \"previous\"");run("for -item -(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
+    run("item := \"previous\"");run("for --item --(\"alpha\" \"beta\") item");require(shell.seed().print(run("item"))=="\"previous\"","loop binding restoration");
     ProcessResult p;require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"z\" \"a\" | hirari_test_program sort"),p)&&p.out=="a\nz\n","pipeline regression");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit \"\" \"space value\" \"Ω\""),p)&&p.out=="\nspace value\nΩ\n","portable Unicode/empty argv regression");
     std::string special = "apostrophe'only";
@@ -151,7 +151,7 @@ void semantics_and_processes(const std::filesystem::path& helper) {
         require(ProcessHost::unpack(shell.seed(),run(source),p)&&p.status==0&&p.out.empty()&&host.out=="a\nz\n","explicit exec pipeline lost argv or stream");
     }
     auto provider="provide "+quote(path_text(helper));
-    run("data bind -held ("+provider+")");
+    run("data bind --held ("+provider+")");
     auto held=run("held");require(shell.seed().is_name(held)&&run("held")==held,"structured result lost retained identity");
     require(shell.seed().is_number(run("data get held \"large\""))&&shell.seed().print(run("data get held \"large\""))=="9223372036854775807","structured integer lost precision or type");
     require(shell.seed().is_unit(run("data get held \"null\""))&&shell.seed().is_literal(run("data get held \"empty\"")),"Unit collapsed to empty text");
@@ -164,11 +164,11 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     shell.seed().bind(shell.seed().intern("restored"),restored);
     require(shell.seed().print(run("data json restored"))==shell.seed().print(run("data json held")),
             "structured record/list representation did not survive print/read");
-    require(shell.seed().is_name(run(provider+" -semantic"))&&shell.seed().is_literal(run(provider+" \"semantic\"")),"provider flattened Names to text");
+    require(shell.seed().is_name(run(provider+" --semantic"))&&shell.seed().is_literal(run(provider+" \"semantic\"")),"provider flattened Names to text");
     require(shell.seed().is_unit(run(provider+" ()")),"provider lost Unit");
     require(!shell.execute("hirari_test_program emit held"),"structured result silently flattened to argv");
     require(ProcessHost::unpack(shell.seed(),run("exec \"hirari_test_program\" emit (data json held)"),p)&&p.out.find("9223372036854775807")!=std::string::npos,"explicit projection failed");
-    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit -c -3 3.14"),p)&&p.out=="-c\n-3\n3.14\n", "Name flag or physical literal argv changed");
+    require(ProcessHost::unpack(shell.seed(),run("hirari_test_program emit --c -3 3.14"),p)&&p.out=="--c\n-3\n3.14\n", "Name flag or physical literal argv changed");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program fail || hirari_test_program emit \"recovered\""),p)&&p.status==0&&p.out=="recovered\n", "process OR did not recover failure");
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program fail && missing_neutral_program"),p)&&p.status==7, "process AND demanded skipped branch");
     Fixtures routing;
@@ -180,7 +180,7 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     run("{hirari_test_program bulk > "+destination+"}");
     require(std::filesystem::file_size(output)==20*1024*1024, "native redirection buffered into capture budget");
     run("{held > "+destination+"}");
-    run("data bind -routed (data read "+destination+")");
+    run("data bind --routed (data read "+destination+")");
     require(shell.seed().print(run("data json routed"))==shell.seed().print(run("data json held")), "structured file sink flattened data");
     run("{\"a\" > "+destination+"}");run("{\"b\" >> "+destination+"}");
     {std::ifstream file(output,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(file)),{});require(bytes=="ab", "literal redirection inserted formatting");}
@@ -189,23 +189,23 @@ void semantics_and_processes(const std::filesystem::path& helper) {
     // ("sort" is quoted: a bare sort would name Windows' sort.exe as a producer.)
     host.out.clear();run("{hirari_test_program \"sort\" < "+destination+"}");
     require(host.out=="a\nz\n","{ < file } did not feed stdin");
-    require(ProcessHost::unpack(shell.seed(),run("data bind -sorted {hirari_test_program \"sort\" < "+destination+"}"),p)&&p.out=="a\nz\n",
+    require(ProcessHost::unpack(shell.seed(),run("data bind --sorted {hirari_test_program \"sort\" < "+destination+"}"),p)&&p.out=="a\nz\n",
             "nested { < file } did not answer its output");
     require(!shell.execute("{hirari_test_program emit \"x\" | hirari_test_program sort < "+destination+"}"),"< after | was accepted");
     // Outside braces > and < compare values; >> has no meaning there.
-    require(shell.seed().print(run("5 > 3"))=="-true" && shell.seed().print(run("2 >= 3"))=="-false","> outside braces is not a comparison");
+    require(shell.seed().print(run("5 > 3"))=="--true" && shell.seed().print(run("2 >= 3"))=="--false","> outside braces is not a comparison");
     require(!shell.execute("\"x\" >> "+destination),">> outside braces was accepted");
     // An unknown program fails wherever it is applied, not only at top level.
     require(!shell.execute("data print (missing_neutral_program 1)"),"nested unknown program stayed inert");
     // Line blocks run like a file: each line's result is shown, a failing line stops the block.
     host.out.clear();
-    require(shell.seed().print(run("if -true (\n  hirari_test_program emit \"one\"\n  \"two\"\n) ()"))=="\"two\"" &&
+    require(shell.seed().print(run("if --true (\n  hirari_test_program emit \"one\"\n  \"two\"\n) ()"))=="\"two\"" &&
             host.out.find("one")!=std::string::npos, "block line output was not presented");
     host.out.clear();
     require(!shell.execute("(\n  hirari_test_program fail\n  hirari_test_program emit \"after\"\n)") && host.out.find("after")==std::string::npos,
             "a failing block line did not stop the block");
-    run("data bind -n 0");run("data bind -total 0");
-    run("while (n < 4) (\n  data bind -total (total + n)\n  data bind -n (n + 1)\n)");
+    run("data bind --n 0");run("data bind --total 0");
+    run("while (n < 4) (\n  data bind --total (total + n)\n  data bind --n (n + 1)\n)");
     require(shell.seed().print(run("total"))=="6","while with a line block body did not iterate");
     require(shell.seed().print(run("data at [10 20 30] 1"))=="20" && shell.seed().print(run("data size []"))=="0","list literal did not reach data");
     // Application and | are Seed application: the producer completes and its
@@ -228,8 +228,8 @@ void semantics_and_processes(const std::filesystem::path& helper) {
         std::string seen=host.out;if(ProcessHost::unpack(shell.seed(),value,p))seen+=p.out;
         require(seen.starts_with("LIVE\n")&&seen.ends_with("last\n"),"pipeline producer was buffered");
     }
-    // Nested inside an expression, the pipeline answers -stdout -stderr -status -stages.
-    require(ProcessHost::unpack(shell.seed(),run("data bind -piped {hirari_test_program emit \"z\" \"a\" | hirari_test_program sort}"),p)&&p.out=="a\nz\n"&&p.stages==std::vector<int>{0,0},
+    // Nested inside an expression, the pipeline answers --stdout --stderr --status --stages.
+    require(ProcessHost::unpack(shell.seed(),run("data bind --piped {hirari_test_program emit \"z\" \"a\" | hirari_test_program sort}"),p)&&p.out=="a\nz\n"&&p.stages==std::vector<int>{0,0},
             "nested pipeline answer lost output or stage statuses");
     // The | inside parentheses is application, never handed to a process as argv.
     require(ProcessHost::unpack(shell.seed(),run("hirari_test_program relay (hirari_test_program emit \"z\" \"a\" | hirari_test_program sort)"),p)&&p.out=="a\nz\n",
